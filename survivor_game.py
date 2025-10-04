@@ -131,6 +131,20 @@ FOREST_LIGHT = "#2c3a2c"
 URBAN_DARK = "#44484c"
 URBAN_LIGHT = "#5c6166"
 
+MAP_BACKGROUND_BLEND = 0.45
+MAP_DETAIL_BLEND = 0.55
+
+ENEMY_INDICATOR_COLOR = "#ff4d57"
+ENEMY_INDICATOR_SIZE = 18.0
+ENEMY_INDICATOR_MARGIN = 36.0
+ENEMY_INDICATOR_POINTS: Tuple[Tuple[float, float], ...] = (
+    (0.0, -1.0),
+    (-0.6, 0.8),
+    (0.6, 0.8),
+)
+
+MOUSE_DRAG_THRESHOLD = 6.0
+
 
 @dataclass
 class PlayerConfig:
@@ -530,6 +544,7 @@ class SurvivorGame:
         self.camera_position = Vector2(self.position.x, self.position.y)
         self.camera_manual_override = False
         self.camera_dragging = False
+        self._mouse_press_position: Vector2 | None = None
         self._last_mouse_position: Vector2 | None = None
         self.mouse_canvas_position: Vector2 | None = None
 
@@ -554,6 +569,7 @@ class SurvivorGame:
         self.weapon_cooldowns: Dict[str, float] = {}
         self.weapon_pickups: List[WeaponPickup] = []
         self.weapon_indicator_items: List[int] = []
+        self.enemy_indicator_items: List[int] = []
         self.weapon_spawn_handles: Dict[int, str] = {}
         self.active_attacks: List[WeaponAttack] = []
         self.game_running = False
@@ -679,6 +695,7 @@ class SurvivorGame:
                 color = self._blend_colors(URBAN_DARK, URBAN_LIGHT, micro)
                 biome = "urban"
 
+        color = self._blend_colors(color, BACKGROUND_COLOR, MAP_BACKGROUND_BLEND)
         surface = (color, biome)
         self.tile_surface_cache[key] = surface
         return surface
@@ -703,6 +720,7 @@ class SurvivorGame:
                 URBAN_LIGHT,
                 self._noise(normalized_x, normalized_y, seed=722.0, scale=0.9),
             )
+            tone = self._blend_colors(tone, BACKGROUND_COLOR, MAP_DETAIL_BLEND)
             road_width = max(2.0, tile_size * 0.08)
             if orientation > 0.5:
                 y_center = pixel_y + tile_size * (
@@ -750,6 +768,7 @@ class SurvivorGame:
                     FOREST_DARK,
                     self._noise(normalized_x, normalized_y, seed=offset_seed + 2.3, scale=1.0),
                 )
+                foliage_color = self._blend_colors(foliage_color, BACKGROUND_COLOR, MAP_DETAIL_BLEND)
                 self.canvas.create_oval(
                     center_x - tree_radius,
                     center_y - tree_radius,
@@ -1224,6 +1243,7 @@ class SurvivorGame:
             self._remove_weapon_pickup(pickup)
         self.weapon_pickups.clear()
         self._clear_weapon_indicator()
+        self._clear_enemy_indicators()
         self.active_attacks.clear()
         self._cancel_weapon_spawn_handles()
         self.weapon_cooldowns.clear()
@@ -1273,15 +1293,28 @@ class SurvivorGame:
 
     def _on_mouse_press(self, event: tk.Event) -> None:  # type: ignore[override]
         self.canvas.focus_set()
-        self.camera_dragging = True
-        self.camera_manual_override = True
+        self.camera_dragging = False
+        self._mouse_press_position = Vector2(event.x, event.y)
         self._last_mouse_position = Vector2(event.x, event.y)
         self._on_mouse_move(event)
 
     def _on_mouse_drag(self, event: tk.Event) -> None:  # type: ignore[override]
+        self._on_mouse_move(event)
+        if self._last_mouse_position is None:
+            self._last_mouse_position = Vector2(event.x, event.y)
+        if not self.camera_dragging:
+            if self._mouse_press_position is None:
+                self._mouse_press_position = Vector2(event.x, event.y)
+            distance = math.hypot(
+                event.x - self._mouse_press_position.x,
+                event.y - self._mouse_press_position.y,
+            )
+            if distance >= MOUSE_DRAG_THRESHOLD:
+                self.camera_dragging = True
+                self.camera_manual_override = True
+                self._mouse_press_position = None
         if not self.camera_dragging or self._last_mouse_position is None:
             return
-        self._on_mouse_move(event)
         delta_x = event.x - self._last_mouse_position.x
         delta_y = event.y - self._last_mouse_position.y
         self._last_mouse_position = Vector2(event.x, event.y)
@@ -1292,8 +1325,13 @@ class SurvivorGame:
         )
 
     def _on_mouse_release(self, _event: tk.Event) -> None:  # type: ignore[override]
+        was_dragging = self.camera_dragging
         self.camera_dragging = False
         self._last_mouse_position = None
+        self._mouse_press_position = None
+        if not was_dragging and self.game_running:
+            self._update_facing_direction_from_mouse()
+            self._use_selected_weapon()
 
     def _on_mouse_move(self, event: tk.Event) -> None:  # type: ignore[override]
         self.mouse_canvas_position = Vector2(event.x, event.y)
@@ -1583,6 +1621,8 @@ class SurvivorGame:
 
         for enemy in self.enemies:
             self._update_enemy_canvas(enemy, top_left_pixel_x, top_left_pixel_y, tile_size)
+
+        self._render_enemy_indicators(tile_size, viewport_width, viewport_height)
 
         self._render_weapon_attacks(top_left_pixel_x, top_left_pixel_y, tile_size)
 
@@ -1927,6 +1967,13 @@ class SurvivorGame:
             self.canvas.delete(item_id)
         self.weapon_indicator_items.clear()
 
+    def _clear_enemy_indicators(self) -> None:
+        if not self.enemy_indicator_items:
+            return
+        for item_id in self.enemy_indicator_items:
+            self.canvas.delete(item_id)
+        self.enemy_indicator_items.clear()
+
     def _render_weapon_pickups(
         self, top_left_pixel_x: float, top_left_pixel_y: float, tile_size: float
     ) -> None:
@@ -2102,6 +2149,53 @@ class SurvivorGame:
         self.weapon_indicator_items.append(arrow_id)
         for item_id in self.weapon_indicator_items:
             self.canvas.tag_raise(item_id)
+
+    def _render_enemy_indicators(
+        self,
+        tile_size: float,
+        viewport_width: float,
+        viewport_height: float,
+    ) -> None:
+        self._clear_enemy_indicators()
+        if not self.enemies:
+            return
+        half_width = max(1.0, viewport_width / 2 - ENEMY_INDICATOR_MARGIN)
+        half_height = max(1.0, viewport_height / 2 - ENEMY_INDICATOR_MARGIN)
+        if half_width <= 0.0 or half_height <= 0.0:
+            return
+        center_x = viewport_width / 2
+        center_y = viewport_height / 2
+        for enemy in self.enemies:
+            delta_x = self._wrapped_delta(self.camera_position.x, enemy.position.x) * tile_size
+            delta_y = self._wrapped_delta(self.camera_position.y, enemy.position.y) * tile_size
+            if -viewport_width / 2 <= delta_x <= viewport_width / 2 and -viewport_height / 2 <= delta_y <= viewport_height / 2:
+                continue
+            direction = Vector2(delta_x, delta_y)
+            if direction.length() == 0.0:
+                continue
+            scale_x = half_width / abs(direction.x) if abs(direction.x) > 1e-6 else float("inf")
+            scale_y = half_height / abs(direction.y) if abs(direction.y) > 1e-6 else float("inf")
+            scale = min(scale_x, scale_y)
+            if not math.isfinite(scale) or scale <= 0.0:
+                continue
+            position_x = center_x + direction.x * scale
+            position_y = center_y + direction.y * scale
+            angle = math.atan2(direction.y, direction.x)
+            coords = self._transform_points(
+                ENEMY_INDICATOR_POINTS,
+                angle,
+                ENEMY_INDICATOR_SIZE,
+                position_x,
+                position_y,
+            )
+            indicator_id = self.canvas.create_polygon(
+                *coords,
+                fill=ENEMY_INDICATOR_COLOR,
+                outline="#2b080a",
+                width=1,
+            )
+            self.enemy_indicator_items.append(indicator_id)
+            self.canvas.tag_raise(indicator_id)
 
     def _render_weapon_attacks(
         self, top_left_pixel_x: float, top_left_pixel_y: float, tile_size: float
@@ -2417,6 +2511,7 @@ class SurvivorGame:
             self._remove_weapon_pickup(pickup)
         self.weapon_pickups.clear()
         self._clear_weapon_indicator()
+        self._clear_enemy_indicators()
         for attack in list(self.active_attacks):
             for item_id in attack.canvas_items:
                 self.canvas.delete(item_id)
