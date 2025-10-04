@@ -187,6 +187,7 @@ class Enemy:
     canvas_id: Optional[int] = None
     health_bar_id: Optional[int] = None
     health_bar_border_id: Optional[int] = None
+    extra_canvas_items: Dict[str, int] = field(default_factory=dict)
 
 
 def load_game_config() -> GameConfig:
@@ -567,10 +568,7 @@ class SurvivorGame:
                 color = self._blend_colors(FOREST_DARK, FOREST_LIGHT, micro)
                 biome = "forest"
             elif vegetation < 0.72:
-                alternating = (x + y) % 2
-                base = FIELD_DARK if alternating == 0 else FIELD_LIGHT
-                accent = FIELD_LIGHT if alternating == 0 else FIELD_DARK
-                color = self._blend_colors(base, accent, micro * 0.6 + 0.2)
+                color = self._blend_colors(FIELD_DARK, FIELD_LIGHT, micro * 0.5 + 0.25)
                 biome = "field"
             else:
                 color = self._blend_colors(URBAN_DARK, URBAN_LIGHT, micro)
@@ -1246,11 +1244,10 @@ class SurvivorGame:
         right = pixel_x + radius
         bottom = pixel_y + radius
         color = self.enemy_colors.get(enemy.enemy_type.name, "#ff7043")
-        if enemy.canvas_id is None:
-            enemy.canvas_id = self.canvas.create_oval(left, top, right, bottom, fill=color, outline="#1b1b1b", width=2)
+        if enemy.enemy_type.name == "zombie":
+            self._update_zombie_sprite(enemy, left, top, right, bottom)
         else:
-            self.canvas.coords(enemy.canvas_id, left, top, right, bottom)
-            self.canvas.itemconfigure(enemy.canvas_id, fill=color)
+            self._update_basic_enemy_sprite(enemy, left, top, right, bottom, color)
 
         bar_width = tile_size * 0.6
         bar_height = 6
@@ -1285,10 +1282,184 @@ class SurvivorGame:
             self.canvas.coords(enemy.health_bar_border_id, bar_left, bar_top, bar_right, bar_bottom)
         if enemy.canvas_id is not None:
             self.canvas.tag_raise(enemy.canvas_id)
+        for item_id in enemy.extra_canvas_items.values():
+            self.canvas.tag_raise(item_id)
         if enemy.health_bar_id is not None:
             self.canvas.tag_raise(enemy.health_bar_id)
         if enemy.health_bar_border_id is not None:
             self.canvas.tag_raise(enemy.health_bar_border_id)
+
+    def _update_basic_enemy_sprite(
+        self,
+        enemy: Enemy,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        fill_color: str,
+    ) -> None:
+        if enemy.extra_canvas_items:
+            for item_id in enemy.extra_canvas_items.values():
+                self.canvas.delete(item_id)
+            enemy.extra_canvas_items.clear()
+        outline_width = 2
+        if enemy.canvas_id is None:
+            enemy.canvas_id = self.canvas.create_oval(
+                left,
+                top,
+                right,
+                bottom,
+                fill=fill_color,
+                outline="#1b1b1b",
+                width=outline_width,
+            )
+        else:
+            self.canvas.coords(enemy.canvas_id, left, top, right, bottom)
+            self.canvas.itemconfigure(enemy.canvas_id, fill=fill_color, outline="#1b1b1b", width=outline_width)
+
+    def _update_zombie_sprite(self, enemy: Enemy, left: float, top: float, right: float, bottom: float) -> None:
+        radius = (right - left) / 2
+        center_x = (left + right) / 2
+        center_y = (top + bottom) / 2
+        outline_width = max(2.0, radius * 0.2)
+        if enemy.canvas_id is None:
+            enemy.canvas_id = self.canvas.create_oval(
+                left,
+                top,
+                right,
+                bottom,
+                fill="#5b8f3a",
+                outline="#2b401d",
+                width=outline_width,
+            )
+        else:
+            self.canvas.coords(enemy.canvas_id, left, top, right, bottom)
+            self.canvas.itemconfigure(
+                enemy.canvas_id,
+                fill="#5b8f3a",
+                outline="#2b401d",
+                width=outline_width,
+            )
+
+        expected_keys = {
+            "zombie_eye_left",
+            "zombie_eye_right",
+            "zombie_pupil_left",
+            "zombie_pupil_right",
+            "zombie_mouth",
+            "zombie_hair",
+        }
+        for key in list(enemy.extra_canvas_items.keys()):
+            if key not in expected_keys:
+                self.canvas.delete(enemy.extra_canvas_items[key])
+                del enemy.extra_canvas_items[key]
+
+        eye_half_width = radius * 0.2
+        eye_half_height = radius * 0.2
+        eye_offset_x = radius * 0.4
+        eye_offset_y = radius * 0.6
+
+        left_eye_coords = (
+            center_x - eye_offset_x - eye_half_width,
+            center_y - eye_offset_y - eye_half_height,
+            center_x - eye_offset_x + eye_half_width,
+            center_y - eye_offset_y + eye_half_height,
+        )
+        right_eye_coords = (
+            center_x + eye_offset_x - eye_half_width,
+            center_y - eye_offset_y - eye_half_height,
+            center_x + eye_offset_x + eye_half_width,
+            center_y - eye_offset_y + eye_half_height,
+        )
+
+        if "zombie_eye_left" in enemy.extra_canvas_items:
+            self.canvas.coords(enemy.extra_canvas_items["zombie_eye_left"], *left_eye_coords)
+        else:
+            enemy.extra_canvas_items["zombie_eye_left"] = self.canvas.create_rectangle(
+                *left_eye_coords,
+                fill="#dfe9cc",
+                outline="",
+            )
+
+        if "zombie_eye_right" in enemy.extra_canvas_items:
+            self.canvas.coords(enemy.extra_canvas_items["zombie_eye_right"], *right_eye_coords)
+        else:
+            enemy.extra_canvas_items["zombie_eye_right"] = self.canvas.create_rectangle(
+                *right_eye_coords,
+                fill="#dfe9cc",
+                outline="",
+            )
+
+        pupil_radius = radius * 0.1
+        left_pupil_coords = (
+            center_x - eye_offset_x - pupil_radius,
+            center_y - eye_offset_y - pupil_radius,
+            center_x - eye_offset_x + pupil_radius,
+            center_y - eye_offset_y + pupil_radius,
+        )
+        right_pupil_coords = (
+            center_x + eye_offset_x - pupil_radius,
+            center_y - eye_offset_y - pupil_radius,
+            center_x + eye_offset_x + pupil_radius,
+            center_y - eye_offset_y + pupil_radius,
+        )
+
+        if "zombie_pupil_left" in enemy.extra_canvas_items:
+            self.canvas.coords(enemy.extra_canvas_items["zombie_pupil_left"], *left_pupil_coords)
+        else:
+            enemy.extra_canvas_items["zombie_pupil_left"] = self.canvas.create_oval(
+                *left_pupil_coords,
+                fill="#2b401d",
+                outline="",
+            )
+
+        if "zombie_pupil_right" in enemy.extra_canvas_items:
+            self.canvas.coords(enemy.extra_canvas_items["zombie_pupil_right"], *right_pupil_coords)
+        else:
+            enemy.extra_canvas_items["zombie_pupil_right"] = self.canvas.create_oval(
+                *right_pupil_coords,
+                fill="#2b401d",
+                outline="",
+            )
+
+        mouth_points = (
+            center_x - radius * 0.6,
+            center_y + radius * 0.35,
+            center_x,
+            center_y + radius * 0.55,
+            center_x + radius * 0.6,
+            center_y + radius * 0.35,
+        )
+        mouth_width = max(1.5, radius * 0.15)
+        if "zombie_mouth" in enemy.extra_canvas_items:
+            self.canvas.coords(enemy.extra_canvas_items["zombie_mouth"], *mouth_points)
+            self.canvas.itemconfigure(enemy.extra_canvas_items["zombie_mouth"], width=mouth_width)
+        else:
+            enemy.extra_canvas_items["zombie_mouth"] = self.canvas.create_line(
+                *mouth_points,
+                fill="#2b401d",
+                width=mouth_width,
+                smooth=True,
+                capstyle=tk.ROUND,
+            )
+
+        hair_half_width = radius * 0.1
+        hair_height = radius * 0.5
+        hair_top = center_y - radius - radius * 0.1
+        hair_coords = (
+            center_x - hair_half_width,
+            hair_top,
+            center_x + hair_half_width,
+            hair_top + hair_height,
+        )
+        if "zombie_hair" in enemy.extra_canvas_items:
+            self.canvas.coords(enemy.extra_canvas_items["zombie_hair"], *hair_coords)
+        else:
+            enemy.extra_canvas_items["zombie_hair"] = self.canvas.create_rectangle(
+                *hair_coords,
+                fill="#7aa54d",
+                outline="",
+            )
 
     def _remove_enemy(self, enemy: Enemy) -> None:
         if enemy in self.enemies:
@@ -1296,6 +1467,10 @@ class SurvivorGame:
         if enemy.canvas_id is not None:
             self.canvas.delete(enemy.canvas_id)
             enemy.canvas_id = None
+        if enemy.extra_canvas_items:
+            for item_id in enemy.extra_canvas_items.values():
+                self.canvas.delete(item_id)
+            enemy.extra_canvas_items.clear()
         if enemy.health_bar_id is not None:
             self.canvas.delete(enemy.health_bar_id)
             enemy.health_bar_id = None
