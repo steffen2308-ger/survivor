@@ -9,19 +9,31 @@ The game fulfils the following requirements:
 - The camera can be dragged with the mouse but snaps back to the player as soon as they move
 - Tiles are at least 64 pixels in size
 - HUD shows player health, XP, inventory slots, coins and tile coordinates
+- Zooming is possible via mouse wheel or +/- keys
+- Core map and zoom parameters are configurable via config.json
 """
 
 from __future__ import annotations
 
+import json
 import math
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Tuple
 
-TILE_COUNT = 200
-TILE_SIZE = 64  # pixels per tile
-VIEWPORT_WIDTH = 800
-VIEWPORT_HEIGHT = 600
+BASE_TILE_SIZE = 64  # pixels per tile at zoom level 1.0
+DEFAULT_VIEWPORT_WIDTH = 800
+DEFAULT_VIEWPORT_HEIGHT = 600
+
+DEFAULT_CONFIG = {
+    "initial_zoom": 1.0,
+    "tile_count": 200,
+    "max_zoom": 2.5,
+}
+
+CONFIG_PATH = Path(__file__).with_name("config.json")
+MIN_ZOOM = 0.5
 
 ACCELERATION = 0.12
 MAX_SPEED = 1.2
@@ -46,6 +58,48 @@ INVENTORY_SLOT_BORDER = "#394050"
 
 XP_BAR_WIDTH = 320
 XP_BAR_HEIGHT = 24
+
+
+@dataclass
+class GameConfig:
+    initial_zoom: float
+    tile_count: int
+    max_zoom: float
+
+
+def load_game_config() -> GameConfig:
+    config_data = DEFAULT_CONFIG.copy()
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            raw_config = json.load(config_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        raw_config = {}
+
+    if isinstance(raw_config, dict):
+        for key in DEFAULT_CONFIG:
+            if key in raw_config:
+                config_data[key] = raw_config[key]
+
+    try:
+        initial_zoom = float(config_data["initial_zoom"])
+    except (TypeError, ValueError):
+        initial_zoom = DEFAULT_CONFIG["initial_zoom"]
+
+    try:
+        max_zoom = float(config_data["max_zoom"])
+    except (TypeError, ValueError):
+        max_zoom = DEFAULT_CONFIG["max_zoom"]
+
+    max_zoom = max(MIN_ZOOM, max_zoom)
+    initial_zoom = max(MIN_ZOOM, min(initial_zoom, max_zoom))
+
+    try:
+        tile_count = int(config_data["tile_count"])
+    except (TypeError, ValueError):
+        tile_count = DEFAULT_CONFIG["tile_count"]
+
+    tile_count = max(1, tile_count)
+    return GameConfig(initial_zoom=initial_zoom, tile_count=tile_count, max_zoom=max_zoom)
 
 
 @dataclass
@@ -83,19 +137,35 @@ class Vector2:
 
 class SurvivorGame:
     def __init__(self) -> None:
+        self.config = load_game_config()
+        self.base_tile_size = BASE_TILE_SIZE
+        self.tile_count = self.config.tile_count
+        self.min_zoom = MIN_ZOOM
+        self.max_zoom = max(self.min_zoom, self.config.max_zoom)
+        self.zoom = max(self.min_zoom, min(self.config.initial_zoom, self.max_zoom))
+        self._update_tile_size()
+
         self.root = tk.Tk()
         self.root.title("Survivor")
         self.root.configure(bg=BACKGROUND_COLOR)
-        self.root.resizable(False, False)
+        self.root.attributes("-fullscreen", True)
+        self.root.bind("<Escape>", self._exit_fullscreen)
+        self.root.update_idletasks()
+
+        screen_width = self.root.winfo_screenwidth() or DEFAULT_VIEWPORT_WIDTH
+        screen_height = self.root.winfo_screenheight() or DEFAULT_VIEWPORT_HEIGHT
 
         self.canvas = tk.Canvas(
             self.root,
-            width=VIEWPORT_WIDTH,
-            height=VIEWPORT_HEIGHT,
+            width=screen_width,
+            height=screen_height,
             bg=BACKGROUND_COLOR,
             highlightthickness=0,
         )
-        self.canvas.pack(padx=20, pady=(80, 20))
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.root.bind_all("<MouseWheel>", self._on_mouse_wheel)
+        self.root.bind_all("<Button-4>", self._on_mouse_wheel)
+        self.root.bind_all("<Button-5>", self._on_mouse_wheel)
 
         self.position_label = tk.Label(
             self.root,
@@ -157,35 +227,42 @@ class SurvivorGame:
 
         self.inventory_frame = tk.Frame(self.root, bg=BACKGROUND_COLOR)
         self.inventory_frame.place(relx=0.0, rely=0.0, anchor="nw", x=20, y=20)
-        self.inventory_slots: List[Tuple[tk.Frame, tk.Label]] = []
+        self.inventory_slots: List[Tuple[tk.Canvas, int]] = []
         for row in range(2):
             for column in range(4):
-                slot = tk.Frame(
+                slot_canvas = tk.Canvas(
                     self.inventory_frame,
                     width=56,
                     height=56,
-                    bg=INVENTORY_SLOT_COLOR,
-                    highlightbackground=INVENTORY_SLOT_BORDER,
-                    highlightthickness=1,
+                    bg=BACKGROUND_COLOR,
+                    highlightthickness=0,
                 )
-                slot.grid(row=row, column=column, padx=4, pady=4)
-                slot.grid_propagate(False)
-                label = tk.Label(
-                    slot,
+                slot_canvas.grid(row=row, column=column, padx=4, pady=4)
+                slot_canvas.create_rectangle(
+                    2,
+                    2,
+                    54,
+                    54,
+                    fill=INVENTORY_SLOT_COLOR,
+                    outline=INVENTORY_SLOT_BORDER,
+                    width=1,
+                    stipple="gray50",
+                )
+                text_id = slot_canvas.create_text(
+                    28,
+                    28,
                     text="",
-                    fg=HUD_TEXT_COLOR,
-                    bg=INVENTORY_SLOT_COLOR,
+                    fill=HUD_TEXT_COLOR,
                     font=("Helvetica", 10, "bold"),
                 )
-                label.place(relx=0.5, rely=0.5, anchor="center")
-                self.inventory_slots.append((slot, label))
+                self.inventory_slots.append((slot_canvas, text_id))
 
         self.weapons: List[str | None] = [None] * 4
         self.abilities: List[str | None] = [None] * 4
         self._refresh_inventory_display()
 
         self.velocity = Vector2(0.0, 0.0)
-        self.position = Vector2(TILE_COUNT / 2, TILE_COUNT / 2)
+        self.position = Vector2(self.tile_count / 2, self.tile_count / 2)
         self.camera_position = Vector2(self.position.x, self.position.y)
         self.camera_manual_override = False
         self.camera_dragging = False
@@ -212,6 +289,37 @@ class SurvivorGame:
         self.health_bar_border_id = self.canvas.create_rectangle(0, 0, 0, 0, outline=HUD_TEXT_COLOR, width=1)
 
         self.intro_overlay = self._create_intro_overlay()
+
+    def _exit_fullscreen(self, _event: tk.Event | None = None) -> None:
+        self.root.attributes("-fullscreen", False)
+
+    def _update_tile_size(self) -> None:
+        self.tile_size = self.base_tile_size * self.zoom
+
+    def _adjust_zoom(self, delta: float) -> None:
+        if delta == 0:
+            return
+        new_zoom = max(self.min_zoom, min(self.max_zoom, self.zoom + delta))
+        if math.isclose(new_zoom, self.zoom, rel_tol=1e-9, abs_tol=1e-9):
+            return
+        self.zoom = new_zoom
+        self._update_tile_size()
+
+    def _on_mouse_wheel(self, event: tk.Event) -> None:  # type: ignore[override]
+        direction = 0
+        if hasattr(event, "delta") and event.delta:
+            direction = 1 if event.delta > 0 else -1
+        elif getattr(event, "num", None) in (4, 5):
+            direction = 1 if event.num == 4 else -1
+        if direction:
+            self._adjust_zoom(direction * 0.1)
+
+    def _on_zoom_key(self, event: tk.Event) -> None:  # type: ignore[override]
+        keysym = event.keysym.lower()
+        if keysym in ("plus", "equal", "kp_add"):
+            self._adjust_zoom(0.1)
+        elif keysym in ("minus", "kp_subtract", "underscore"):
+            self._adjust_zoom(-0.1)
 
     def _create_intro_overlay(self) -> tk.Frame:
         overlay = tk.Frame(self.root, bg=INTRO_BG_COLOR)
@@ -281,6 +389,8 @@ class SurvivorGame:
         for key in self._movement_keys():
             self.root.bind_all(f"<KeyPress-{key}>", self._on_key_press)
             self.root.bind_all(f"<KeyRelease-{key}>", self._on_key_release)
+        for key in ("plus", "equal", "KP_Add", "minus", "KP_Subtract", "underscore"):
+            self.root.bind_all(f"<KeyPress-{key}>", self._on_zoom_key)
 
     @staticmethod
     def _movement_keys() -> Iterable[str]:
@@ -304,9 +414,10 @@ class SurvivorGame:
         delta_x = event.x - self._last_mouse_position.x
         delta_y = event.y - self._last_mouse_position.y
         self._last_mouse_position = Vector2(event.x, event.y)
+        tile_size = self.tile_size
         self.camera_position = Vector2(
-            (self.camera_position.x - delta_x / TILE_SIZE) % TILE_COUNT,
-            (self.camera_position.y - delta_y / TILE_SIZE) % TILE_COUNT,
+            (self.camera_position.x - delta_x / tile_size) % self.tile_count,
+            (self.camera_position.y - delta_y / tile_size) % self.tile_count,
         )
 
     def _on_mouse_release(self, _event: tk.Event) -> None:  # type: ignore[override]
@@ -336,8 +447,8 @@ class SurvivorGame:
                 self.velocity = Vector2(self.velocity.x, 0.0)
 
     def _update_position(self) -> None:
-        new_x = (self.position.x + self.velocity.x) % TILE_COUNT
-        new_y = (self.position.y + self.velocity.y) % TILE_COUNT
+        new_x = (self.position.x + self.velocity.x) % self.tile_count
+        new_y = (self.position.y + self.velocity.y) % self.tile_count
         self.position = Vector2(new_x, new_y)
 
     def _update_camera(self) -> None:
@@ -346,57 +457,63 @@ class SurvivorGame:
         if self.velocity.length() > SPEED_EPSILON:
             self.camera_manual_override = False
         if self.camera_manual_override:
-            self.camera_position = Vector2(self.camera_position.x % TILE_COUNT, self.camera_position.y % TILE_COUNT)
+            self.camera_position = Vector2(
+                self.camera_position.x % self.tile_count,
+                self.camera_position.y % self.tile_count,
+            )
             return
         delta_x = self._wrapped_delta(self.camera_position.x, self.position.x)
         delta_y = self._wrapped_delta(self.camera_position.y, self.position.y)
         self.camera_position = Vector2(
-            (self.camera_position.x + delta_x * CAMERA_RETURN_SPEED) % TILE_COUNT,
-            (self.camera_position.y + delta_y * CAMERA_RETURN_SPEED) % TILE_COUNT,
+            (self.camera_position.x + delta_x * CAMERA_RETURN_SPEED) % self.tile_count,
+            (self.camera_position.y + delta_y * CAMERA_RETURN_SPEED) % self.tile_count,
         )
 
-    @staticmethod
-    def _wrapped_delta(current: float, target: float) -> float:
-        diff = (target - current + TILE_COUNT / 2) % TILE_COUNT - TILE_COUNT / 2
+    def _wrapped_delta(self, current: float, target: float) -> float:
+        diff = (target - current + self.tile_count / 2) % self.tile_count - self.tile_count / 2
         return diff
 
     def _render_scene(self) -> None:
-        top_left_pixel_x = self.camera_position.x * TILE_SIZE - VIEWPORT_WIDTH / 2
-        top_left_pixel_y = self.camera_position.y * TILE_SIZE - VIEWPORT_HEIGHT / 2
+        viewport_width = max(1, self.canvas.winfo_width())
+        viewport_height = max(1, self.canvas.winfo_height())
+        tile_size = self.tile_size
 
-        start_tile_x = math.floor(top_left_pixel_x / TILE_SIZE)
-        start_tile_y = math.floor(top_left_pixel_y / TILE_SIZE)
+        top_left_pixel_x = self.camera_position.x * tile_size - viewport_width / 2
+        top_left_pixel_y = self.camera_position.y * tile_size - viewport_height / 2
 
-        visible_columns = VIEWPORT_WIDTH // TILE_SIZE + 3
-        visible_rows = VIEWPORT_HEIGHT // TILE_SIZE + 3
+        start_tile_x = math.floor(top_left_pixel_x / tile_size)
+        start_tile_y = math.floor(top_left_pixel_y / tile_size)
+
+        visible_columns = int(viewport_width / tile_size) + 3
+        visible_rows = int(viewport_height / tile_size) + 3
 
         self.canvas.delete("grid")
         for column in range(visible_columns):
             tile_x = start_tile_x + column
-            pixel_x = tile_x * TILE_SIZE - top_left_pixel_x
+            pixel_x = tile_x * tile_size - top_left_pixel_x
             self.canvas.create_line(
                 pixel_x,
                 0,
                 pixel_x,
-                VIEWPORT_HEIGHT,
+                viewport_height,
                 fill=GRID_COLOR,
                 tags="grid",
             )
         for row in range(visible_rows):
             tile_y = start_tile_y + row
-            pixel_y = tile_y * TILE_SIZE - top_left_pixel_y
+            pixel_y = tile_y * tile_size - top_left_pixel_y
             self.canvas.create_line(
                 0,
                 pixel_y,
-                VIEWPORT_WIDTH,
+                viewport_width,
                 pixel_y,
                 fill=GRID_COLOR,
                 tags="grid",
             )
 
-        player_pixel_x = self.position.x * TILE_SIZE - top_left_pixel_x
-        player_pixel_y = self.position.y * TILE_SIZE - top_left_pixel_y
-        radius = TILE_SIZE * 0.3
+        player_pixel_x = self.position.x * tile_size - top_left_pixel_x
+        player_pixel_y = self.position.y * tile_size - top_left_pixel_y
+        radius = tile_size * 0.3
         self.canvas.coords(
             self.player_id,
             player_pixel_x - radius,
@@ -405,7 +522,7 @@ class SurvivorGame:
             player_pixel_y + radius,
         )
 
-        bar_width = TILE_SIZE * 0.8
+        bar_width = tile_size * 0.8
         bar_height = 10
         bar_left = player_pixel_x - bar_width / 2
         bar_right = player_pixel_x + bar_width / 2
@@ -420,8 +537,8 @@ class SurvivorGame:
         self.canvas.coords(self.health_bar_border_id, bar_left, bar_top, bar_right, bar_bottom)
 
     def _update_status_ui(self) -> None:
-        tile_x = int(self.position.x) % TILE_COUNT
-        tile_y = int(self.position.y) % TILE_COUNT
+        tile_x = int(self.position.x) % self.tile_count
+        tile_y = int(self.position.y) % self.tile_count
         self.position_label.config(text=f"Position: ({tile_x:03d}, {tile_y:03d})")
         self._update_xp_bar()
 
@@ -432,12 +549,12 @@ class SurvivorGame:
         self.xp_canvas.itemconfigure(self.xp_text_id, text=f"XP {self.xp} / {self.xp_to_next_level}")
 
     def _refresh_inventory_display(self) -> None:
-        for index, (_slot, label) in enumerate(self.inventory_slots):
+        for index, (slot_canvas, text_id) in enumerate(self.inventory_slots):
             if index < 4:
                 item = self.weapons[index]
             else:
                 item = self.abilities[index - 4]
-            label.config(text=item if item else "")
+            slot_canvas.itemconfigure(text_id, text=item if item else "")
 
     def _update_coin_label(self) -> None:
         self.coin_label.config(text=f"Coins: {self.coins}")
