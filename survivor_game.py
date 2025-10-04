@@ -531,6 +531,7 @@ class SurvivorGame:
         self.ability_slot_count = max(0, len(self.inventory_slots) - self.weapon_slot_count)
         self.weapon_inventory: List[Weapon | None] = [None] * self.weapon_slot_count
         self.abilities: List[str | None] = [None] * self.ability_slot_count
+        self.selected_weapon_index: Optional[int] = None
         self._refresh_inventory_display()
 
         self.velocity = Vector2(0.0, 0.0)
@@ -560,7 +561,6 @@ class SurvivorGame:
         self.game_over_overlay: Optional[tk.Frame] = None
 
         self.keys_pressed: set[str] = set()
-        self.selected_weapon_index: Optional[int] = None
         self.weapon_cooldowns: Dict[str, float] = {}
         self.weapon_pickups: List[WeaponPickup] = []
         self.weapon_spawn_handles: Dict[int, str] = {}
