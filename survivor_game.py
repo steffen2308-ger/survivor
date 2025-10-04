@@ -53,7 +53,7 @@ UPDATE_DELAY_MS = 16  # ~60 FPS
 
 CAMERA_RETURN_SPEED = 0.35
 
-BACKGROUND_COLOR = "#0b1016"
+BACKGROUND_COLOR = "#121417"
 PLAYER_BODY_COLOR = "#2fb875"
 PLAYER_BELLY_COLOR = "#1d7b4d"
 PLAYER_CREST_COLOR = "#45e09a"
@@ -117,17 +117,18 @@ PLAYER_HEALTHBAR_OFFSET = 0.65
 
 ENEMY_WANDER_STRENGTH = 0.6
 ENEMY_WANDER_INTERVAL_RANGE = (0.6, 1.6)
+ENEMY_JITTER_STRENGTH = 0.25
 
-WATER_DARK = "#0b2f47"
-WATER_LIGHT = "#1f4f73"
-SHORE_DARK = "#bda36f"
-SHORE_LIGHT = "#d8c99b"
-FIELD_DARK = "#5a7f35"
-FIELD_LIGHT = "#8fad4e"
-FOREST_DARK = "#1f4526"
-FOREST_LIGHT = "#2f5d30"
-URBAN_DARK = "#7b7a72"
-URBAN_LIGHT = "#a9a59a"
+WATER_DARK = "#101820"
+WATER_LIGHT = "#1b2732"
+SHORE_DARK = "#8a7f6b"
+SHORE_LIGHT = "#a79c87"
+FIELD_DARK = "#475040"
+FIELD_LIGHT = "#6c7563"
+FOREST_DARK = "#1d2a20"
+FOREST_LIGHT = "#2c3a2c"
+URBAN_DARK = "#44484c"
+URBAN_LIGHT = "#5c6166"
 
 
 @dataclass
@@ -521,6 +522,13 @@ class SurvivorGame:
         self.health_bar_bg_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=HEALTH_BAR_BG_COLOR, outline="")
         self.health_bar_fill_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=HEALTH_BAR_FILL_COLOR, outline="")
         self.health_bar_border_id = self.canvas.create_rectangle(0, 0, 0, 0, outline=HUD_TEXT_COLOR, width=1)
+        self.health_bar_text_id = self.canvas.create_text(
+            0,
+            0,
+            text="",
+            fill=HUD_TEXT_COLOR,
+            font=("Helvetica", 8, "bold"),
+        )
 
         self.enemy_types = self._load_enemy_types()
         self.spawn_rules = self._load_level_rules()
@@ -1165,6 +1173,16 @@ class SurvivorGame:
         self.canvas.coords(self.health_bar_bg_id, bar_left, bar_top, bar_right, bar_bottom)
         self.canvas.coords(self.health_bar_fill_id, bar_left + 2, bar_top + 2, fill_right, bar_bottom - 2)
         self.canvas.coords(self.health_bar_border_id, bar_left, bar_top, bar_right, bar_bottom)
+        self.canvas.coords(
+            self.health_bar_text_id,
+            (bar_left + bar_right) / 2,
+            (bar_top + bar_bottom) / 2,
+        )
+        self.canvas.itemconfigure(
+            self.health_bar_text_id,
+            text=f"{int(round(self.health))}/{self.max_health}",
+        )
+        self.canvas.tag_raise(self.health_bar_text_id, self.health_bar_border_id)
 
     def _update_status_ui(self) -> None:
         tile_x = int(self.position.x) % self.tile_count
@@ -1532,6 +1550,10 @@ class SurvivorGame:
             if move_distance > 0.0:
                 chase_direction = to_player.normalize() if distance_to_player > 0.0 else Vector2(0.0, 0.0)
                 combined_direction = chase_direction + enemy.wander_direction * ENEMY_WANDER_STRENGTH
+                jitter = random_unit_vector() * ENEMY_JITTER_STRENGTH
+                combined_direction = combined_direction + jitter
+                if combined_direction.length() == 0.0:
+                    combined_direction = jitter
                 if combined_direction.length() == 0.0:
                     combined_direction = enemy.wander_direction
                 if combined_direction.length() == 0.0:
