@@ -1,0 +1,79 @@
+{
+  "weapons": [
+    {
+      "id": "schwert",
+      "name": "Schwert",
+      "damage": 22,
+      "range": 1.2,
+      "hit_chance": 0.85,
+      "appearance": "assets/weapons/schwert.svg",
+      "properties": {
+        "cooldown": 0.6,
+        "impact_width": 1.0,
+        "effect_duration": 0.18,
+        "color": "#5c6bc0",
+        "beschreibung": "Solides Klingenwaffen-Grundmodell mit breitem Schwung."
+      }
+    },
+    {
+      "id": "pistole",
+      "name": "Pistole",
+      "damage": 16,
+      "range": 6.0,
+      "hit_chance": 0.65,
+      "appearance": "assets/weapons/pistole.svg",
+      "properties": {
+        "cooldown": 0.45,
+        "impact_width": 0.6,
+        "effect_duration": 0.14,
+        "color": "#90caf9",
+        "beschreibung": "Leichte Seitenwaffe mit brauchbarer Reichweite und moderater Präzision."
+      }
+    },
+    {
+      "id": "kanone",
+      "name": "Kanone",
+      "damage": 48,
+      "range": 7.5,
+      "hit_chance": 0.55,
+      "appearance": "assets/weapons/kanone.svg",
+      "properties": {
+        "cooldown": 1.8,
+        "impact_width": 1.4,
+        "effect_duration": 0.3,
+        "color": "#90a4ae",
+        "beschreibung": "Schwere Kanone mit wuchtigem Einschlag und Flächenschaden."
+      }
+    },
+    {
+      "id": "maschinengewehr",
+      "name": "Maschinengewehr",
+      "damage": 10,
+      "range": 5.5,
+      "hit_chance": 0.5,
+      "appearance": "assets/weapons/maschinengewehr.svg",
+      "properties": {
+        "cooldown": 0.18,
+        "impact_width": 0.8,
+        "effect_duration": 0.12,
+        "color": "#90caf9",
+        "beschreibung": "Rattert kurze Feuerstöße, die Gegner in Blickrichtung unter Druck setzen."
+      }
+    },
+    {
+      "id": "feuerwerfer",
+      "name": "Feuerwerfer",
+      "damage": 8,
+      "range": 2.8,
+      "hit_chance": 0.75,
+      "appearance": "assets/weapons/feuerwerfer.svg",
+      "properties": {
+        "cooldown": 0.35,
+        "impact_width": 1.8,
+        "effect_duration": 0.4,
+        "color": "#ff7043",
+        "beschreibung": "Spuckt einen flammenden Kegel mit hoher Trefferchance auf kurze Distanz."
+      }
+    }
+  ]
+}

@@ -5,6 +5,9 @@
       "max_xp": 99,
       "spawns": [
         {"enemy": "zombie", "interval_seconds": 30}
+      ],
+      "weapons": [
+        {"weapon": "schwert", "delay_seconds": 3}
       ]
     },
     {
@@ -13,6 +16,10 @@
       "spawns": [
         {"enemy": "zombie", "interval_seconds": 30},
         {"enemy": "skeleton", "interval_seconds": 30}
+      ],
+      "weapons": [
+        {"weapon": "pistole", "delay_seconds": 5},
+        {"weapon": "maschinengewehr", "delay_seconds": 18}
       ]
     },
     {
@@ -22,6 +29,10 @@
         {"enemy": "zombie", "interval_seconds": 25},
         {"enemy": "skeleton", "interval_seconds": 20},
         {"enemy": "ogre", "interval_seconds": 45}
+      ],
+      "weapons": [
+        {"weapon": "kanone", "delay_seconds": 6},
+        {"weapon": "feuerwerfer", "delay_seconds": 24}
       ]
     }
   ]
