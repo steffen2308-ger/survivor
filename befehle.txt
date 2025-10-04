@@ -1,0 +1,19 @@
+Es soll ein Spiel erstellt werden.
+Das Spiel soll aus einer 2D-Draufsicht bestehen.
+Es soll einen Spieler geben, welcher mit der Tastatur (WASD oder den Pfeiltasten) gesteuert wird.
+Er bewegt sich auf einer Karte von 200x200 Feldern.
+Die Bewegung des Spielers soll etwas physikalisch korrekt sein: Wenn er losläuft beschleunigt er leicht und
+wenn man keine Taste mehr drückt, nimmt die Geschwindigkeit stark ab bis zum stoppen.
+Bevor das Spiel beginnt, soll eine kleine Einleitung und Anleitung über das Spiel "Survivor" gezeigt werden.
+In der rechten Oberen Fensterecke soll die Position des Spielers gezeigt werden.
+Wenn der Spieler das Ende der Karte erreicht, dann soll er am Anfang der Karte beginnen (Endlose Karte)
+
+Ein Spielkartenfeld soll mindesten 64 Pixel groß sein.
+Der Spieler soll eine Lebensbalken über seinen Kopf haben die bis ein 100 geht
+In der Mitte oben auf dem Bildschirm soll eine XP Leiste sein, welche Erfahrungspunkte anzeigt, die der Spieler sich verdienen muss.
+Der Spieler soll bis zu 8 Gegenständen tragen können.
+4 sollen Waffen sein und 4 sollen Gegenstände sein die Fähigkeiten verbessern.
+Die 8 Gegenstände werden oben Links in einer Ecke angezeigt (aufgeteilt in zwei Reihen die oberen sollen die Waffen sein,
+die unteren die Gegenstände.), wenn er noch keine Gegenstände hat, dann werden 8 leere Vierecke angezeigt.
+Oben Rechts sollen noch Coins als Währung gezeigt werden, welche der Spieler verdient.
+(Pro 5 Sekunden lebendig im spielfeld bekommt er einen Coin)
