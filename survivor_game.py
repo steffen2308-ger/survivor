@@ -115,6 +115,9 @@ PLAYER_PUPIL_RADIUS = 0.036
 PLAYER_SCALE = 0.52
 PLAYER_HEALTHBAR_OFFSET = 0.65
 
+ENEMY_WANDER_STRENGTH = 0.6
+ENEMY_WANDER_INTERVAL_RANGE = (0.6, 1.6)
+
 WATER_DARK = "#0b2f47"
 WATER_LIGHT = "#1f4f73"
 SHORE_DARK = "#bda36f"
@@ -189,6 +192,8 @@ class Enemy:
     health_bar_id: Optional[int] = None
     health_bar_border_id: Optional[int] = None
     extra_canvas_items: Dict[str, int] = field(default_factory=dict)
+    wander_direction: Vector2 = field(default_factory=lambda: Vector2(1.0, 0.0))
+    next_wander_change: float = field(default_factory=lambda: 0.0)
 
 
 def load_game_config() -> GameConfig:
@@ -299,6 +304,11 @@ class Vector2:
             return Vector2(0.0, 0.0)
         scale = max_length / length
         return Vector2(self.x * scale, self.y * scale)
+
+
+def random_unit_vector() -> Vector2:
+    angle = random.uniform(0.0, 2 * math.pi)
+    return Vector2(math.cos(angle), math.sin(angle))
 
 
 class SurvivorGame:
@@ -960,14 +970,21 @@ class SurvivorGame:
     def _apply_input(self) -> None:
         self._update_facing_direction_from_mouse()
         direction = Vector2(0.0, 0.0)
+        facing = self.facing_direction
+        if facing.length() == 0.0:
+            facing = Vector2(0.0, -1.0)
+        else:
+            facing = facing.normalize()
+        right = Vector2(facing.y, -facing.x)
+        left = Vector2(-facing.y, facing.x)
         if "w" in self.keys_pressed or "up" in self.keys_pressed:
-            direction = direction + Vector2(0.0, -1.0)
+            direction = direction + facing
         if "s" in self.keys_pressed or "down" in self.keys_pressed:
-            direction = direction + Vector2(0.0, 1.0)
+            direction = direction + facing * -1.0
         if "a" in self.keys_pressed or "left" in self.keys_pressed:
-            direction = direction + Vector2(-1.0, 0.0)
+            direction = direction + left
         if "d" in self.keys_pressed or "right" in self.keys_pressed:
-            direction = direction + Vector2(1.0, 0.0)
+            direction = direction + right
 
         if direction.length() > 0.0:
             self.camera_manual_override = False
@@ -1226,6 +1243,8 @@ class SurvivorGame:
             enemy_type=enemy_type,
             position=spawn_position,
             health=enemy_type.initial_health,
+            wander_direction=random_unit_vector(),
+            next_wander_change=time.monotonic() + random.uniform(*ENEMY_WANDER_INTERVAL_RANGE),
         )
         self.enemies.append(enemy)
         self._schedule_spawn_entry(entry)
@@ -1500,24 +1519,32 @@ class SurvivorGame:
         delta_time = UPDATE_DELAY_MS / 1000.0
         now = time.monotonic()
         for enemy in list(self.enemies):
-            direction = Vector2(
+            if now >= enemy.next_wander_change:
+                enemy.wander_direction = random_unit_vector()
+                enemy.next_wander_change = now + random.uniform(*ENEMY_WANDER_INTERVAL_RANGE)
+
+            to_player = Vector2(
                 self._wrapped_delta(enemy.position.x, self.position.x),
                 self._wrapped_delta(enemy.position.y, self.position.y),
             )
-            distance = direction.length()
-            if distance > 0.0:
-                move_distance = enemy.enemy_type.speed * delta_time
-                if move_distance > 0.0:
-                    if distance <= move_distance:
-                        enemy.position = Vector2(self.position.x, self.position.y)
-                    else:
-                        step = direction.normalize() * move_distance
-                        enemy.position = Vector2(
-                            (enemy.position.x + step.x) % self.tile_count,
-                            (enemy.position.y + step.y) % self.tile_count,
-                        )
+            distance_to_player = to_player.length()
+            move_distance = max(0.0, enemy.enemy_type.speed) * delta_time
+            if move_distance > 0.0:
+                chase_direction = to_player.normalize() if distance_to_player > 0.0 else Vector2(0.0, 0.0)
+                combined_direction = chase_direction + enemy.wander_direction * ENEMY_WANDER_STRENGTH
+                if combined_direction.length() == 0.0:
+                    combined_direction = enemy.wander_direction
+                if combined_direction.length() == 0.0:
+                    combined_direction = random_unit_vector()
+                step = combined_direction.normalize() * move_distance
+                enemy.position = Vector2(
+                    (enemy.position.x + step.x) % self.tile_count,
+                    (enemy.position.y + step.y) % self.tile_count,
+                )
+            updated_distance = self._distance_in_tiles(enemy.position, self.position)
+
             collision_distance = 0.45
-            if distance <= collision_distance:
+            if updated_distance <= collision_distance:
                 cooldown = enemy.enemy_type.attack_cooldown
                 if now - enemy.last_attack_time >= cooldown:
                     self.health = max(0, self.health - enemy.enemy_type.strength)
