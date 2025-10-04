@@ -30,13 +30,17 @@ DEFAULT_CONFIG = {
     "initial_zoom": 1.0,
     "tile_count": 200,
     "max_zoom": 2.5,
+    "player": {
+        "max_health": 100,
+        "initial_health": 100,
+        "max_speed": 1.2,
+    },
 }
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 MIN_ZOOM = 0.5
 
 ACCELERATION = 0.12
-MAX_SPEED = 1.2
 FRICTION = 0.82
 SPEED_EPSILON = 0.01
 UPDATE_DELAY_MS = 16  # ~60 FPS
@@ -108,14 +112,22 @@ PLAYER_HEALTHBAR_OFFSET = 0.65
 
 
 @dataclass
+class PlayerConfig:
+    max_health: int
+    initial_health: int
+    max_speed: float
+
+
+@dataclass
 class GameConfig:
     initial_zoom: float
     tile_count: int
     max_zoom: float
+    player: PlayerConfig
 
 
 def load_game_config() -> GameConfig:
-    config_data = DEFAULT_CONFIG.copy()
+    config_data = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
             raw_config = json.load(config_file)
@@ -123,9 +135,13 @@ def load_game_config() -> GameConfig:
         raw_config = {}
 
     if isinstance(raw_config, dict):
-        for key in DEFAULT_CONFIG:
-            if key in raw_config:
-                config_data[key] = raw_config[key]
+        for key, value in raw_config.items():
+            if key == "player" and isinstance(value, dict):
+                for stat_key, stat_value in value.items():
+                    if stat_key in config_data["player"]:
+                        config_data["player"][stat_key] = stat_value
+            elif key in config_data:
+                config_data[key] = value
 
     try:
         initial_zoom = float(config_data["initial_zoom"])
@@ -146,7 +162,38 @@ def load_game_config() -> GameConfig:
         tile_count = DEFAULT_CONFIG["tile_count"]
 
     tile_count = max(1, tile_count)
-    return GameConfig(initial_zoom=initial_zoom, tile_count=tile_count, max_zoom=max_zoom)
+    player_data = config_data["player"]
+
+    try:
+        max_health = int(player_data["max_health"])
+    except (TypeError, ValueError):
+        max_health = DEFAULT_CONFIG["player"]["max_health"]
+    max_health = max(1, max_health)
+
+    try:
+        initial_health = int(player_data["initial_health"])
+    except (TypeError, ValueError):
+        initial_health = DEFAULT_CONFIG["player"]["initial_health"]
+    initial_health = max(0, min(initial_health, max_health))
+
+    try:
+        max_speed = float(player_data["max_speed"])
+    except (TypeError, ValueError):
+        max_speed = DEFAULT_CONFIG["player"]["max_speed"]
+    max_speed = max(0.0, max_speed)
+
+    player_config = PlayerConfig(
+        max_health=max_health,
+        initial_health=initial_health,
+        max_speed=max_speed,
+    )
+
+    return GameConfig(
+        initial_zoom=initial_zoom,
+        tile_count=tile_count,
+        max_zoom=max_zoom,
+        player=player_config,
+    )
 
 
 @dataclass
@@ -185,6 +232,7 @@ class Vector2:
 class SurvivorGame:
     def __init__(self) -> None:
         self.config = load_game_config()
+        self.player_config = self.config.player
         self.base_tile_size = BASE_TILE_SIZE
         self.tile_count = self.config.tile_count
         self.min_zoom = MIN_ZOOM
@@ -316,8 +364,9 @@ class SurvivorGame:
         self.camera_dragging = False
         self._last_mouse_position: Vector2 | None = None
 
-        self.max_health = 100
-        self.health = 100
+        self.max_health = max(1, self.player_config.max_health)
+        self.health = max(0, min(self.player_config.initial_health, self.max_health))
+        self.max_speed = max(0.0, self.player_config.max_speed)
         self.xp = 0
         self.xp_to_next_level = 100
         self.coins = 0
@@ -524,7 +573,7 @@ class SurvivorGame:
             normalized = direction.normalize()
             if normalized.length() > 0.0:
                 self.facing_direction = normalized
-            self.velocity = (self.velocity + normalized * ACCELERATION).clamp_magnitude(MAX_SPEED)
+            self.velocity = (self.velocity + normalized * ACCELERATION).clamp_magnitude(self.max_speed)
         else:
             self.velocity = Vector2(self.velocity.x * FRICTION, self.velocity.y * FRICTION)
             if abs(self.velocity.x) < SPEED_EPSILON:

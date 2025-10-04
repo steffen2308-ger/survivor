@@ -1,0 +1,23 @@
+{
+  "zombie": {
+    "strength": 8,
+    "speed": 0.6,
+    "initial_health": 50,
+    "appearance": "assets/enemies/zombie.svg",
+    "attack_speed": 0.1
+  },
+  "skeleton": {
+    "strength": 6,
+    "speed": 0.9,
+    "initial_health": 35,
+    "appearance": "assets/enemies/skeleton.svg",
+    "attack_speed": 0.25
+  },
+  "ogre": {
+    "strength": 14,
+    "speed": 0.5,
+    "initial_health": 120,
+    "appearance": "assets/enemies/ogre.svg",
+    "attack_speed": 0.18
+  }
+}
