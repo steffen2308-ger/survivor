@@ -563,6 +563,7 @@ class SurvivorGame:
         self.keys_pressed: set[str] = set()
         self.weapon_cooldowns: Dict[str, float] = {}
         self.weapon_pickups: List[WeaponPickup] = []
+        self.weapon_indicator_items: List[int] = []
         self.weapon_spawn_handles: Dict[int, str] = {}
         self.active_attacks: List[WeaponAttack] = []
         self.game_running = False
@@ -1232,6 +1233,7 @@ class SurvivorGame:
         for pickup in list(self.weapon_pickups):
             self._remove_weapon_pickup(pickup)
         self.weapon_pickups.clear()
+        self._clear_weapon_indicator()
         self.active_attacks.clear()
         self._cancel_weapon_spawn_handles()
         self.weapon_cooldowns.clear()
@@ -1581,6 +1583,13 @@ class SurvivorGame:
         self._update_player_sprite(player_pixel_x, player_pixel_y, tile_size)
 
         self._render_weapon_pickups(top_left_pixel_x, top_left_pixel_y, tile_size)
+        self._render_weapon_indicator(
+            top_left_pixel_x,
+            top_left_pixel_y,
+            tile_size,
+            viewport_width,
+            viewport_height,
+        )
 
         for enemy in self.enemies:
             self._update_enemy_canvas(enemy, top_left_pixel_x, top_left_pixel_y, tile_size)
@@ -1855,6 +1864,8 @@ class SurvivorGame:
         for item_id in pickup.canvas_items:
             self.canvas.delete(item_id)
         pickup.canvas_items.clear()
+        if not self.weapon_pickups:
+            self._clear_weapon_indicator()
 
     def _distance_in_tiles(self, a: Vector2, b: Vector2) -> float:
         delta_x = self._wrapped_delta(a.x, b.x)
@@ -1920,6 +1931,13 @@ class SurvivorGame:
             self.canvas.tag_raise(enemy.health_bar_id)
         if enemy.health_bar_border_id is not None:
             self.canvas.tag_raise(enemy.health_bar_border_id)
+
+    def _clear_weapon_indicator(self) -> None:
+        if not self.weapon_indicator_items:
+            return
+        for item_id in self.weapon_indicator_items:
+            self.canvas.delete(item_id)
+        self.weapon_indicator_items.clear()
 
     def _render_weapon_pickups(
         self, top_left_pixel_x: float, top_left_pixel_y: float, tile_size: float
@@ -2018,6 +2036,84 @@ class SurvivorGame:
                         pickup.canvas_items.append(item_id)
             for item_id in pickup.canvas_items:
                 self.canvas.tag_raise(item_id)
+
+    def _render_weapon_indicator(
+        self,
+        top_left_pixel_x: float,
+        top_left_pixel_y: float,
+        tile_size: float,
+        viewport_width: float,
+        viewport_height: float,
+    ) -> None:
+        self._clear_weapon_indicator()
+        if not self.weapon_pickups:
+            return
+
+        nearest_pickup: WeaponPickup | None = None
+        nearest_distance = float("inf")
+        for pickup in self.weapon_pickups:
+            pixel_x = pickup.position.x * tile_size - top_left_pixel_x
+            pixel_y = pickup.position.y * tile_size - top_left_pixel_y
+            if 0 <= pixel_x <= viewport_width and 0 <= pixel_y <= viewport_height:
+                continue
+            distance = self._distance_in_tiles(self.position, pickup.position)
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_pickup = pickup
+
+        if nearest_pickup is None:
+            return
+
+        delta_x = self._wrapped_delta(self.camera_position.x, nearest_pickup.position.x)
+        delta_y = self._wrapped_delta(self.camera_position.y, nearest_pickup.position.y)
+        direction_pixels_x = delta_x * tile_size
+        direction_pixels_y = delta_y * tile_size
+        length_pixels = math.hypot(direction_pixels_x, direction_pixels_y)
+        if length_pixels <= 1e-6:
+            return
+        unit_x = direction_pixels_x / length_pixels
+        unit_y = direction_pixels_y / length_pixels
+
+        margin = 40.0
+        half_width = max(1.0, viewport_width / 2 - margin)
+        half_height = max(1.0, viewport_height / 2 - margin)
+        scale_x = half_width / abs(unit_x) if abs(unit_x) > 1e-6 else float("inf")
+        scale_y = half_height / abs(unit_y) if abs(unit_y) > 1e-6 else float("inf")
+        scale = min(scale_x, scale_y)
+
+        center_x = viewport_width / 2 + unit_x * scale
+        center_y = viewport_height / 2 + unit_y * scale
+
+        arrow_length = 32.0
+        arrow_width = 22.0
+        cos_a = unit_x
+        sin_a = unit_y
+        perp_x = -sin_a
+        perp_y = cos_a
+
+        tip_x = center_x + cos_a * arrow_length * 0.5
+        tip_y = center_y + sin_a * arrow_length * 0.5
+        base_center_x = center_x - cos_a * arrow_length * 0.5
+        base_center_y = center_y - sin_a * arrow_length * 0.5
+        left_x = base_center_x + perp_x * arrow_width * 0.5
+        left_y = base_center_y + perp_y * arrow_width * 0.5
+        right_x = base_center_x - perp_x * arrow_width * 0.5
+        right_y = base_center_y - perp_y * arrow_width * 0.5
+
+        arrow_id = self.canvas.create_polygon(
+            tip_x,
+            tip_y,
+            left_x,
+            left_y,
+            right_x,
+            right_y,
+            fill="#f7b731",
+            outline="#1b1f2a",
+            width=2,
+        )
+        self.weapon_indicator_items.append(arrow_id)
+        for item_id in self.weapon_indicator_items:
+            self.canvas.tag_raise(item_id)
 
     def _render_weapon_attacks(
         self, top_left_pixel_x: float, top_left_pixel_y: float, tile_size: float
@@ -2342,6 +2438,7 @@ class SurvivorGame:
         for pickup in list(self.weapon_pickups):
             self._remove_weapon_pickup(pickup)
         self.weapon_pickups.clear()
+        self._clear_weapon_indicator()
         for attack in list(self.active_attacks):
             for item_id in attack.canvas_items:
                 self.canvas.delete(item_id)
