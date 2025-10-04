@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
         "max_health": 100,
         "initial_health": 100,
         "max_speed": 1.2,
+        "initial_speed": 1.2,
     },
 }
 
@@ -116,6 +117,7 @@ class PlayerConfig:
     max_health: int
     initial_health: int
     max_speed: float
+    initial_speed: float
 
 
 @dataclass
@@ -182,10 +184,17 @@ def load_game_config() -> GameConfig:
         max_speed = DEFAULT_CONFIG["player"]["max_speed"]
     max_speed = max(0.0, max_speed)
 
+    try:
+        initial_speed_value = float(player_data.get("initial_speed", max_speed))
+    except (TypeError, ValueError):
+        initial_speed_value = DEFAULT_CONFIG["player"]["initial_speed"]
+    initial_speed_value = max(0.0, initial_speed_value)
+
     player_config = PlayerConfig(
         max_health=max_health,
         initial_health=initial_health,
         max_speed=max_speed,
+        initial_speed=initial_speed_value,
     )
 
     return GameConfig(
@@ -363,10 +372,13 @@ class SurvivorGame:
         self.camera_manual_override = False
         self.camera_dragging = False
         self._last_mouse_position: Vector2 | None = None
+        self.mouse_canvas_position: Vector2 | None = None
 
         self.max_health = max(1, self.player_config.max_health)
         self.health = max(0, min(self.player_config.initial_health, self.max_health))
-        self.max_speed = max(0.0, self.player_config.max_speed)
+        self.forward_speed = max(0.0, self.player_config.initial_speed)
+        if self.forward_speed <= 0.0:
+            self.forward_speed = max(0.0, self.player_config.max_speed)
         self.xp = 0
         self.xp_to_next_level = 100
         self.coins = 0
@@ -379,6 +391,7 @@ class SurvivorGame:
         self.canvas.bind("<ButtonPress-1>", self._on_mouse_press)
         self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_mouse_release)
+        self.canvas.bind("<Motion>", self._on_mouse_move)
 
         self.player_body_id = self.canvas.create_polygon(
             0,
@@ -540,10 +553,12 @@ class SurvivorGame:
         self.camera_dragging = True
         self.camera_manual_override = True
         self._last_mouse_position = Vector2(event.x, event.y)
+        self._on_mouse_move(event)
 
     def _on_mouse_drag(self, event: tk.Event) -> None:  # type: ignore[override]
         if not self.camera_dragging or self._last_mouse_position is None:
             return
+        self._on_mouse_move(event)
         delta_x = event.x - self._last_mouse_position.x
         delta_y = event.y - self._last_mouse_position.y
         self._last_mouse_position = Vector2(event.x, event.y)
@@ -557,7 +572,39 @@ class SurvivorGame:
         self.camera_dragging = False
         self._last_mouse_position = None
 
+    def _on_mouse_move(self, event: tk.Event) -> None:  # type: ignore[override]
+        self.mouse_canvas_position = Vector2(event.x, event.y)
+
+    def _update_facing_direction_from_mouse(self) -> None:
+        if self.mouse_canvas_position is None:
+            return
+        viewport_width = max(1, self.canvas.winfo_width())
+        viewport_height = max(1, self.canvas.winfo_height())
+        tile_size = self.tile_size
+        top_left_pixel_x = self.camera_position.x * tile_size - viewport_width / 2
+        top_left_pixel_y = self.camera_position.y * tile_size - viewport_height / 2
+        player_pixel_x = self.position.x * tile_size - top_left_pixel_x
+        player_pixel_y = self.position.y * tile_size - top_left_pixel_y
+        direction = Vector2(
+            self.mouse_canvas_position.x - player_pixel_x,
+            self.mouse_canvas_position.y - player_pixel_y,
+        )
+        if direction.length() > 0.0:
+            self.facing_direction = direction.normalize()
+
+    def _movement_speed_factor(self, movement_direction: Vector2) -> float:
+        facing_length = self.facing_direction.length()
+        if facing_length == 0.0:
+            return 1.0
+        facing = self.facing_direction.normalize()
+        dot_product = facing.x * movement_direction.x + facing.y * movement_direction.y
+        dot_product = max(-1.0, min(1.0, dot_product))
+        angle = math.acos(dot_product)
+        factor = 1.0 - 0.5 * (angle / math.pi)
+        return max(0.5, min(1.0, factor))
+
     def _apply_input(self) -> None:
+        self._update_facing_direction_from_mouse()
         direction = Vector2(0.0, 0.0)
         if "w" in self.keys_pressed or "up" in self.keys_pressed:
             direction = direction + Vector2(0.0, -1.0)
@@ -572,8 +619,13 @@ class SurvivorGame:
             self.camera_manual_override = False
             normalized = direction.normalize()
             if normalized.length() > 0.0:
-                self.facing_direction = normalized
-            self.velocity = (self.velocity + normalized * ACCELERATION).clamp_magnitude(self.max_speed)
+                speed_factor = self._movement_speed_factor(normalized)
+                target_speed = self.forward_speed * speed_factor
+                if target_speed <= 0.0:
+                    self.velocity = Vector2(0.0, 0.0)
+                else:
+                    accelerated = self.velocity + normalized * ACCELERATION
+                    self.velocity = accelerated.clamp_magnitude(target_speed)
         else:
             self.velocity = Vector2(self.velocity.x * FRICTION, self.velocity.y * FRICTION)
             if abs(self.velocity.x) < SPEED_EPSILON:
