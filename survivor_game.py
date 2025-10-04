@@ -146,6 +146,15 @@ ENEMY_INDICATOR_POINTS: Tuple[Tuple[float, float], ...] = (
 MOUSE_DRAG_THRESHOLD = 6.0
 
 
+SOUND_EFFECT_PATTERNS: Dict[str, Tuple[Tuple[int, float], ...]] = {
+    "enemy_spawn": ((540, 0.08), (620, 0.08)),
+    "weapon_use": ((880, 0.06), (960, 0.06)),
+    "enemy_killed": ((420, 0.12), (320, 0.18)),
+    "player_move": ((760, 0.04),),
+    "weapon_pickup": ((660, 0.05), (760, 0.05)),
+}
+
+
 @dataclass
 class PlayerConfig:
     max_health: int
@@ -558,6 +567,7 @@ class SurvivorGame:
         self.coins = 0
         self._update_coin_label()
         self._update_xp_bar()
+        self._last_sound_play: Dict[str, float] = {}
         self.tile_surface_cache: dict[tuple[int, int], tuple[str, str]] = {}
         self.tile_rectangles: List[int] = []
         self.start_time: Optional[float] = None
@@ -662,6 +672,32 @@ class SurvivorGame:
         mixed_b = cls._blend_channel(a_b, b_b, factor)
         return f"#{mixed_r:02x}{mixed_g:02x}{mixed_b:02x}"
 
+    def _play_sound_effect(self, effect: str, throttle: float = 0.0) -> None:
+        pattern = SOUND_EFFECT_PATTERNS.get(effect)
+        if not pattern:
+            return
+        now = time.monotonic()
+        last_played = self._last_sound_play.get(effect)
+        if throttle > 0.0 and last_played is not None and now - last_played < throttle:
+            return
+        self._last_sound_play[effect] = now
+
+        def run() -> None:
+            try:
+                import winsound
+
+                for frequency, duration in pattern:
+                    winsound.Beep(int(frequency), max(1, int(duration * 1000)))
+            except Exception:
+                for _frequency, duration in pattern:
+                    try:
+                        self.root.bell()
+                    except tk.TclError:
+                        break
+                    time.sleep(duration)
+
+        threading.Thread(target=run, daemon=True).start()
+
     @staticmethod
     def _noise(x: float, y: float, seed: float = 0.0, scale: float = 1.0) -> float:
         return 0.5 + 0.5 * math.sin((x * scale * 12.9898 + y * scale * 78.233 + seed) * 43758.5453)
@@ -678,25 +714,19 @@ class SurvivorGame:
         micro = self._noise(x, y, seed=53.0, scale=0.45)
 
         if continental < 0.18:
-            color = self._blend_colors(WATER_DARK, WATER_LIGHT, detail)
             biome = "water"
         elif continental < 0.24:
-            color = self._blend_colors(SHORE_DARK, SHORE_LIGHT, detail)
             biome = "shore"
         else:
             vegetation = self._noise(x, y, seed=101.4, scale=0.18)
             if vegetation < 0.34:
-                color = self._blend_colors(FOREST_DARK, FOREST_LIGHT, micro)
                 biome = "forest"
             elif vegetation < 0.72:
-                color = self._blend_colors(FIELD_DARK, FIELD_LIGHT, micro * 0.5 + 0.25)
                 biome = "field"
             else:
-                color = self._blend_colors(URBAN_DARK, URBAN_LIGHT, micro)
                 biome = "urban"
 
-        color = self._blend_colors(color, BACKGROUND_COLOR, MAP_BACKGROUND_BLEND)
-        surface = (color, biome)
+        surface = ("#000000", biome)
         self.tile_surface_cache[key] = surface
         return surface
 
@@ -1428,9 +1458,14 @@ class SurvivorGame:
         else:
             direction = direction.normalize()
         origin = Vector2(self.position.x, self.position.y)
+        self._play_sound_effect("weapon_use")
+        impact_distance = self._apply_weapon_damage(weapon, direction, origin)
+        travel_distance = weapon.range_tiles
+        if impact_distance is not None:
+            travel_distance = min(travel_distance, impact_distance)
         end_position = Vector2(
-            origin.x + direction.x * weapon.range_tiles,
-            origin.y + direction.y * weapon.range_tiles,
+            origin.x + direction.x * travel_distance,
+            origin.y + direction.y * travel_distance,
         )
         attack = WeaponAttack(
             weapon=weapon,
@@ -1440,11 +1475,13 @@ class SurvivorGame:
             created_at=time.monotonic(),
         )
         self.active_attacks.append(attack)
-        self._apply_weapon_damage(weapon, direction, origin)
 
-    def _apply_weapon_damage(self, weapon: Weapon, direction: Vector2, origin: Vector2) -> None:
+    def _apply_weapon_damage(
+        self, weapon: Weapon, direction: Vector2, origin: Vector2
+    ) -> Optional[float]:
         if direction.length() == 0.0:
-            return
+            return None
+        candidates: List[Tuple[float, Enemy]] = []
         for enemy in list(self.enemies):
             offset = Vector2(
                 self._wrapped_delta(origin.x, enemy.position.x),
@@ -1460,13 +1497,23 @@ class SurvivorGame:
             lateral_distance = math.sqrt(lateral_sq)
             if lateral_distance > weapon.impact_width * 0.5:
                 continue
-            if random.random() <= weapon.hit_chance:
-                enemy.health = max(0.0, enemy.health - weapon.damage)
-                if enemy.health <= 0.0:
-                    self._remove_enemy(enemy)
+            candidates.append((distance_along, enemy))
+
+        candidates.sort(key=lambda item: item[0])
+        for distance_along, enemy in candidates:
+            if random.random() > weapon.hit_chance:
+                continue
+            enemy.health = max(0.0, enemy.health - weapon.damage)
+            if enemy.health <= 0.0:
+                self._play_sound_effect("enemy_killed")
+                self._remove_enemy(enemy)
+            return distance_along
+        return None
 
     def _update_position(self) -> None:
         previous_position = Vector2(self.position.x, self.position.y)
+        if self.game_running and self.velocity.length() > SPEED_EPSILON:
+            self._play_sound_effect("player_move", throttle=0.25)
         new_x = (self.position.x + self.velocity.x) % self.tile_count
         new_y = (self.position.y + self.velocity.y) % self.tile_count
         self.position = Vector2(new_x, new_y)
@@ -1694,12 +1741,21 @@ class SurvivorGame:
         base_left = (56 - icon_size) / 2
         base_top = 6.0
         if not weapon.icon_shapes:
-            slot_canvas.create_oval(
-                base_left + icon_size * 0.2,
-                base_top + icon_size * 0.2,
-                base_left + icon_size * 0.8,
-                base_top + icon_size * 0.8,
-                fill="#4fb6ff",
+            slot_canvas.create_rectangle(
+                base_left + icon_size * 0.45,
+                base_top + icon_size * 0.15,
+                base_left + icon_size * 0.55,
+                base_top + icon_size * 0.85,
+                fill=weapon.color,
+                outline="",
+                tags=tag,
+            )
+            slot_canvas.create_rectangle(
+                base_left + icon_size * 0.25,
+                base_top + icon_size * 0.45,
+                base_left + icon_size * 0.75,
+                base_top + icon_size * 0.55,
+                fill=weapon.color,
                 outline="",
                 tags=tag,
             )
@@ -1843,6 +1899,7 @@ class SurvivorGame:
             health=enemy_type.initial_health,
         )
         self.enemies.append(enemy)
+        self._play_sound_effect("enemy_spawn")
         self._schedule_spawn_entry(entry)
 
     def _schedule_weapon_entry(self, entry: WeaponSpawnEntry) -> None:
@@ -1993,22 +2050,34 @@ class SurvivorGame:
                 base_top - 4,
                 base_right + 4,
                 base_bottom + 4,
-                fill=self._blend_colors(pickup.weapon.color, BACKGROUND_COLOR, 0.35),
-                outline="",
+                fill="",
+                outline=pickup.weapon.color,
+                width=2,
             )
             pickup.canvas_items.append(halo)
             shapes = pickup.weapon.icon_shapes
             if not shapes:
-                body = self.canvas.create_oval(
-                    base_left,
+                center_x = (base_left + base_right) / 2
+                center_y = (base_top + base_bottom) / 2
+                vertical = self.canvas.create_line(
+                    center_x,
                     base_top,
-                    base_right,
+                    center_x,
                     base_bottom,
                     fill=pickup.weapon.color,
-                    outline="#ffffff",
-                    width=2,
+                    width=max(2.0, icon_size * 0.12),
+                    capstyle=tk.ROUND,
                 )
-                pickup.canvas_items.append(body)
+                horizontal = self.canvas.create_line(
+                    base_left,
+                    center_y,
+                    base_right,
+                    center_y,
+                    fill=pickup.weapon.color,
+                    width=max(2.0, icon_size * 0.12),
+                    capstyle=tk.ROUND,
+                )
+                pickup.canvas_items.extend([vertical, horizontal])
             else:
                 for shape in shapes:
                     kind = shape.get("type")
@@ -2468,6 +2537,7 @@ class SurvivorGame:
         for pickup in list(self.weapon_pickups):
             if self._distance_in_tiles(pickup.position, self.position) <= pickup_radius:
                 if self._add_weapon_to_inventory(pickup.weapon):
+                    self._play_sound_effect("weapon_pickup")
                     self._remove_weapon_pickup(pickup)
 
     def _update_weapon_attacks(self) -> None:
