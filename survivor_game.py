@@ -117,10 +117,7 @@ PLAYER_PUPIL_RADIUS = 0.036
 PLAYER_SCALE = 0.52
 PLAYER_HEALTHBAR_OFFSET = 0.65
 
-ENEMY_WANDER_STRENGTH = 0.18
-ENEMY_WANDER_INTERVAL_RANGE = (1.4, 2.6)
-ENEMY_JITTER_STRENGTH = 0.04
-ENEMY_ACCELERATION = ACCELERATION * 0.9
+ENEMY_ACCELERATION = ACCELERATION * 0.25
 ENEMY_FRICTION = 0.88
 
 WATER_DARK = "#101820"
@@ -198,8 +195,6 @@ class Enemy:
     health_bar_id: Optional[int] = None
     health_bar_border_id: Optional[int] = None
     extra_canvas_items: Dict[str, int] = field(default_factory=dict)
-    wander_direction: Vector2 = field(default_factory=lambda: Vector2(1.0, 0.0))
-    next_wander_change: float = field(default_factory=lambda: 0.0)
     velocity: Vector2 = field(default_factory=lambda: Vector2(0.0, 0.0))
 
 
@@ -376,11 +371,6 @@ class Vector2:
             return Vector2(0.0, 0.0)
         scale = max_length / length
         return Vector2(self.x * scale, self.y * scale)
-
-
-def random_unit_vector() -> Vector2:
-    angle = random.uniform(0.0, 2 * math.pi)
-    return Vector2(math.cos(angle), math.sin(angle))
 
 
 class SurvivorGame:
@@ -1811,8 +1801,6 @@ class SurvivorGame:
             enemy_type=enemy_type,
             position=spawn_position,
             health=enemy_type.initial_health,
-            wander_direction=random_unit_vector(),
-            next_wander_change=time.monotonic() + random.uniform(*ENEMY_WANDER_INTERVAL_RANGE),
         )
         self.enemies.append(enemy)
         self._schedule_spawn_entry(entry)
@@ -2347,24 +2335,14 @@ class SurvivorGame:
         delta_time = UPDATE_DELAY_MS / 1000.0
         now = time.monotonic()
         for enemy in list(self.enemies):
-            if now >= enemy.next_wander_change:
-                enemy.wander_direction = random_unit_vector()
-                enemy.next_wander_change = now + random.uniform(*ENEMY_WANDER_INTERVAL_RANGE)
-
             to_player = Vector2(
                 self._wrapped_delta(enemy.position.x, self.position.x),
                 self._wrapped_delta(enemy.position.y, self.position.y),
             )
             distance_to_player = to_player.length()
-            chase_direction = to_player.normalize() if distance_to_player > 0.0 else Vector2(0.0, 0.0)
-            combined_direction = chase_direction
-            if enemy.wander_direction.length() > 0.0:
-                combined_direction = combined_direction + enemy.wander_direction * ENEMY_WANDER_STRENGTH
-            if ENEMY_JITTER_STRENGTH > 0.0:
-                combined_direction = combined_direction + random_unit_vector() * ENEMY_JITTER_STRENGTH
-            if combined_direction.length() > 0.0:
-                desired_velocity = combined_direction.normalize()
-                accelerated = enemy.velocity + desired_velocity * ENEMY_ACCELERATION
+            if distance_to_player > 0.0:
+                chase_direction = to_player.normalize()
+                accelerated = enemy.velocity + chase_direction * ENEMY_ACCELERATION
                 enemy.velocity = accelerated.clamp_magnitude(max(0.0, enemy.enemy_type.speed))
             else:
                 enemy.velocity = Vector2(enemy.velocity.x * ENEMY_FRICTION, enemy.velocity.y * ENEMY_FRICTION)
