@@ -48,8 +48,7 @@ UPDATE_DELAY_MS = 16  # ~60 FPS
 
 CAMERA_RETURN_SPEED = 0.35
 
-BACKGROUND_COLOR = "#111318"
-GRID_COLOR = "#1f2530"
+BACKGROUND_COLOR = "#0b1016"
 PLAYER_BODY_COLOR = "#2fb875"
 PLAYER_BELLY_COLOR = "#1d7b4d"
 PLAYER_CREST_COLOR = "#45e09a"
@@ -110,6 +109,17 @@ PLAYER_EYE_RADIUS = 0.08
 PLAYER_PUPIL_RADIUS = 0.036
 PLAYER_SCALE = 0.52
 PLAYER_HEALTHBAR_OFFSET = 0.65
+
+WATER_DARK = "#0b2f47"
+WATER_LIGHT = "#1f4f73"
+SHORE_DARK = "#bda36f"
+SHORE_LIGHT = "#d8c99b"
+FIELD_DARK = "#5a7f35"
+FIELD_LIGHT = "#8fad4e"
+FOREST_DARK = "#1f4526"
+FOREST_LIGHT = "#2f5d30"
+URBAN_DARK = "#7b7a72"
+URBAN_LIGHT = "#a9a59a"
 
 
 @dataclass
@@ -278,7 +288,7 @@ class SurvivorGame:
             bg=BACKGROUND_COLOR,
             text="Position: (100, 100)",
         )
-        self.position_label.place(relx=1.0, rely=0.0, anchor="ne", x=-20, y=56)
+        self.position_label.place(relx=1.0, rely=0.0, anchor="ne", x=-20, y=76)
 
         self.coin_label = tk.Label(
             self.root,
@@ -288,6 +298,15 @@ class SurvivorGame:
             text="Coins: 0",
         )
         self.coin_label.place(relx=1.0, rely=0.0, anchor="ne", x=-20, y=20)
+
+        self.speed_label = tk.Label(
+            self.root,
+            font=("Helvetica", 12, "bold"),
+            fg=HUD_TEXT_COLOR,
+            bg=BACKGROUND_COLOR,
+            text="Laufgeschwindigkeit: 0.00 Felder/s",
+        )
+        self.speed_label.place(relx=1.0, rely=0.0, anchor="ne", x=-20, y=48)
 
         self.xp_canvas = tk.Canvas(
             self.root,
@@ -384,6 +403,7 @@ class SurvivorGame:
         self.coins = 0
         self._update_coin_label()
         self._update_xp_bar()
+        self.tile_surface_cache: dict[tuple[int, int], tuple[str, str]] = {}
 
         self.keys_pressed: set[str] = set()
         self.game_running = False
@@ -438,6 +458,141 @@ class SurvivorGame:
 
     def _exit_fullscreen(self, _event: tk.Event | None = None) -> None:
         self.root.attributes("-fullscreen", False)
+
+    @staticmethod
+    def _blend_channel(channel_a: int, channel_b: int, factor: float) -> int:
+        return int(round(channel_a + (channel_b - channel_a) * factor))
+
+    @classmethod
+    def _blend_colors(cls, color_a: str, color_b: str, factor: float) -> str:
+        factor = max(0.0, min(1.0, factor))
+        a_r = int(color_a[1:3], 16)
+        a_g = int(color_a[3:5], 16)
+        a_b = int(color_a[5:7], 16)
+        b_r = int(color_b[1:3], 16)
+        b_g = int(color_b[3:5], 16)
+        b_b = int(color_b[5:7], 16)
+        mixed_r = cls._blend_channel(a_r, b_r, factor)
+        mixed_g = cls._blend_channel(a_g, b_g, factor)
+        mixed_b = cls._blend_channel(a_b, b_b, factor)
+        return f"#{mixed_r:02x}{mixed_g:02x}{mixed_b:02x}"
+
+    @staticmethod
+    def _noise(x: float, y: float, seed: float = 0.0, scale: float = 1.0) -> float:
+        return 0.5 + 0.5 * math.sin((x * scale * 12.9898 + y * scale * 78.233 + seed) * 43758.5453)
+
+    def _get_tile_surface(self, tile_x: int, tile_y: int) -> tuple[str, str]:
+        key = (tile_x % self.tile_count, tile_y % self.tile_count)
+        cached = self.tile_surface_cache.get(key)
+        if cached is not None:
+            return cached
+
+        x, y = key
+        continental = self._noise(x, y, seed=0.23, scale=0.035)
+        detail = self._noise(x, y, seed=7.1, scale=0.16)
+        micro = self._noise(x, y, seed=53.0, scale=0.45)
+
+        if continental < 0.18:
+            color = self._blend_colors(WATER_DARK, WATER_LIGHT, detail)
+            biome = "water"
+        elif continental < 0.24:
+            color = self._blend_colors(SHORE_DARK, SHORE_LIGHT, detail)
+            biome = "shore"
+        else:
+            vegetation = self._noise(x, y, seed=101.4, scale=0.18)
+            if vegetation < 0.34:
+                color = self._blend_colors(FOREST_DARK, FOREST_LIGHT, micro)
+                biome = "forest"
+            elif vegetation < 0.72:
+                alternating = (x + y) % 2
+                base = FIELD_DARK if alternating == 0 else FIELD_LIGHT
+                accent = FIELD_LIGHT if alternating == 0 else FIELD_DARK
+                color = self._blend_colors(base, accent, micro * 0.6 + 0.2)
+                biome = "field"
+            else:
+                color = self._blend_colors(URBAN_DARK, URBAN_LIGHT, micro)
+                biome = "urban"
+
+        surface = (color, biome)
+        self.tile_surface_cache[key] = surface
+        return surface
+
+    def _draw_tile_details(
+        self,
+        tile_x: int,
+        tile_y: int,
+        pixel_x: float,
+        pixel_y: float,
+        tile_size: float,
+        biome: str,
+    ) -> None:
+        normalized_x = tile_x % self.tile_count
+        normalized_y = tile_y % self.tile_count
+
+        road_value = self._noise(normalized_x, normalized_y, seed=311.0, scale=0.045)
+        if biome in {"field", "urban"} and road_value > 0.975:
+            orientation = self._noise(normalized_x, normalized_y, seed=512.0, scale=0.2)
+            tone = self._blend_colors(
+                URBAN_DARK,
+                URBAN_LIGHT,
+                self._noise(normalized_x, normalized_y, seed=722.0, scale=0.9),
+            )
+            road_width = max(2.0, tile_size * 0.08)
+            if orientation > 0.5:
+                y_center = pixel_y + tile_size * (
+                    0.2 + 0.6 * self._noise(normalized_x, normalized_y, seed=845.0, scale=0.6)
+                )
+                self.canvas.create_rectangle(
+                    pixel_x,
+                    y_center - road_width,
+                    pixel_x + tile_size,
+                    y_center + road_width,
+                    fill=tone,
+                    outline="",
+                    tags=("detail",),
+                )
+            else:
+                x_center = pixel_x + tile_size * (
+                    0.2 + 0.6 * self._noise(normalized_x, normalized_y, seed=912.0, scale=0.6)
+                )
+                self.canvas.create_rectangle(
+                    x_center - road_width,
+                    pixel_y,
+                    x_center + road_width,
+                    pixel_y + tile_size,
+                    fill=tone,
+                    outline="",
+                    tags=("detail",),
+                )
+
+        forest_value = self._noise(normalized_x, normalized_y, seed=128.0, scale=0.3)
+        if biome == "forest" and forest_value > 0.62:
+            tree_count = 1 + int(self._noise(normalized_x, normalized_y, seed=931.0, scale=0.95) * 3)
+            tree_radius = max(2.0, tile_size * 0.08)
+            for index in range(tree_count):
+                offset_seed = 150.0 + index * 12.0
+                offset_x = self._noise(normalized_x, normalized_y, seed=offset_seed, scale=0.8) * (
+                    tile_size - tree_radius * 2
+                )
+                offset_y = self._noise(normalized_x, normalized_y, seed=offset_seed + 4.7, scale=0.8) * (
+                    tile_size - tree_radius * 2
+                )
+                center_x = pixel_x + tree_radius + offset_x
+                center_y = pixel_y + tree_radius + offset_y
+                foliage_color = self._blend_colors(
+                    FOREST_LIGHT,
+                    FOREST_DARK,
+                    self._noise(normalized_x, normalized_y, seed=offset_seed + 2.3, scale=1.0),
+                )
+                self.canvas.create_oval(
+                    center_x - tree_radius,
+                    center_y - tree_radius,
+                    center_x + tree_radius,
+                    center_y + tree_radius,
+                    fill=foliage_color,
+                    outline="",
+                    tags=("detail",),
+                )
 
     def _update_tile_size(self) -> None:
         self.tile_size = self.base_tile_size * self.zoom
@@ -741,29 +896,27 @@ class SurvivorGame:
         visible_columns = int(viewport_width / tile_size) + 3
         visible_rows = int(viewport_height / tile_size) + 3
 
+        self.canvas.delete("tile")
+        self.canvas.delete("detail")
         self.canvas.delete("grid")
-        for column in range(visible_columns):
-            tile_x = start_tile_x + column
-            pixel_x = tile_x * tile_size - top_left_pixel_x
-            self.canvas.create_line(
-                pixel_x,
-                0,
-                pixel_x,
-                viewport_height,
-                fill=GRID_COLOR,
-                tags="grid",
-            )
+
         for row in range(visible_rows):
             tile_y = start_tile_y + row
             pixel_y = tile_y * tile_size - top_left_pixel_y
-            self.canvas.create_line(
-                0,
-                pixel_y,
-                viewport_width,
-                pixel_y,
-                fill=GRID_COLOR,
-                tags="grid",
-            )
+            for column in range(visible_columns):
+                tile_x = start_tile_x + column
+                pixel_x = tile_x * tile_size - top_left_pixel_x
+                color, biome = self._get_tile_surface(tile_x, tile_y)
+                self.canvas.create_rectangle(
+                    pixel_x,
+                    pixel_y,
+                    pixel_x + tile_size,
+                    pixel_y + tile_size,
+                    fill=color,
+                    outline="",
+                    tags=("tile",),
+                )
+                self._draw_tile_details(tile_x, tile_y, pixel_x, pixel_y, tile_size, biome)
 
         player_pixel_x = self.position.x * tile_size - top_left_pixel_x
         player_pixel_y = self.position.y * tile_size - top_left_pixel_y
@@ -788,6 +941,10 @@ class SurvivorGame:
         tile_y = int(self.position.y) % self.tile_count
         self.position_label.config(text=f"Position: ({tile_x:03d}, {tile_y:03d})")
         self._update_xp_bar()
+        speed_tiles_per_second = self.velocity.length() * (1000.0 / UPDATE_DELAY_MS)
+        if speed_tiles_per_second < 0.005:
+            speed_tiles_per_second = 0.0
+        self.speed_label.config(text=f"Laufgeschwindigkeit: {speed_tiles_per_second:.2f} Felder/s")
 
     def _update_xp_bar(self) -> None:
         progress = 0.0 if self.xp_to_next_level == 0 else min(1.0, self.xp / self.xp_to_next_level)
