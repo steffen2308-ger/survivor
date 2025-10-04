@@ -45,7 +45,12 @@ CAMERA_RETURN_SPEED = 0.35
 
 BACKGROUND_COLOR = "#111318"
 GRID_COLOR = "#1f2530"
-PLAYER_COLOR = "#3ddc84"
+PLAYER_BODY_COLOR = "#2fb875"
+PLAYER_BELLY_COLOR = "#1d7b4d"
+PLAYER_CREST_COLOR = "#45e09a"
+PLAYER_OUTLINE_COLOR = "#0d331e"
+PLAYER_EYE_COLOR = "#f8f3d6"
+PLAYER_PUPIL_COLOR = "#181c1a"
 HUD_TEXT_COLOR = "#f5f7fb"
 INTRO_BG_COLOR = "#1b2330"
 INTRO_TEXT_COLOR = "#f0f3ff"
@@ -58,6 +63,48 @@ INVENTORY_SLOT_BORDER = "#394050"
 
 XP_BAR_WIDTH = 320
 XP_BAR_HEIGHT = 24
+
+PLAYER_BODY_POINTS: Tuple[Tuple[float, float], ...] = (
+    (-0.82, 0.0),
+    (-0.58, -0.18),
+    (-0.32, -0.32),
+    (-0.02, -0.34),
+    (0.28, -0.26),
+    (0.48, -0.16),
+    (0.64, -0.08),
+    (0.74, -0.04),
+    (0.78, 0.0),
+    (0.74, 0.04),
+    (0.64, 0.08),
+    (0.48, 0.16),
+    (0.28, 0.26),
+    (-0.02, 0.34),
+    (-0.32, 0.32),
+    (-0.58, 0.18),
+)
+
+PLAYER_BELLY_POINTS: Tuple[Tuple[float, float], ...] = (
+    (-0.16, -0.2),
+    (0.18, -0.18),
+    (0.42, -0.08),
+    (0.5, 0.0),
+    (0.42, 0.08),
+    (0.18, 0.18),
+    (-0.16, 0.2),
+)
+
+PLAYER_CREST_POINTS: Tuple[Tuple[float, float], ...] = (
+    (-0.22, -0.42),
+    (0.08, -0.48),
+    (0.26, -0.32),
+    (-0.02, -0.26),
+)
+
+PLAYER_EYE_OFFSET = (0.46, -0.1)
+PLAYER_EYE_RADIUS = 0.08
+PLAYER_PUPIL_RADIUS = 0.036
+PLAYER_SCALE = 0.52
+PLAYER_HEALTHBAR_OFFSET = 0.65
 
 
 @dataclass
@@ -263,6 +310,7 @@ class SurvivorGame:
 
         self.velocity = Vector2(0.0, 0.0)
         self.position = Vector2(self.tile_count / 2, self.tile_count / 2)
+        self.facing_direction = Vector2(0.0, -1.0)
         self.camera_position = Vector2(self.position.x, self.position.y)
         self.camera_manual_override = False
         self.camera_dragging = False
@@ -283,7 +331,43 @@ class SurvivorGame:
         self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_mouse_release)
 
-        self.player_id = self.canvas.create_oval(0, 0, 0, 0, fill=PLAYER_COLOR, outline="")
+        self.player_body_id = self.canvas.create_polygon(
+            0,
+            0,
+            0,
+            0,
+            fill=PLAYER_BODY_COLOR,
+            outline=PLAYER_OUTLINE_COLOR,
+            width=2,
+            smooth=True,
+            splinesteps=12,
+        )
+        self.player_belly_id = self.canvas.create_polygon(
+            0,
+            0,
+            0,
+            0,
+            fill=PLAYER_BELLY_COLOR,
+            outline="",
+            smooth=True,
+            splinesteps=10,
+        )
+        self.player_crest_id = self.canvas.create_polygon(
+            0,
+            0,
+            0,
+            0,
+            fill=PLAYER_CREST_COLOR,
+            outline="",
+            smooth=True,
+            splinesteps=8,
+        )
+        self.player_eye_id = self.canvas.create_oval(0, 0, 0, 0, fill=PLAYER_EYE_COLOR, outline="")
+        self.player_pupil_id = self.canvas.create_oval(0, 0, 0, 0, fill=PLAYER_PUPIL_COLOR, outline="")
+        self.canvas.tag_raise(self.player_belly_id, self.player_body_id)
+        self.canvas.tag_raise(self.player_crest_id, self.player_belly_id)
+        self.canvas.tag_raise(self.player_eye_id, self.player_crest_id)
+        self.canvas.tag_raise(self.player_pupil_id, self.player_eye_id)
         self.health_bar_bg_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=HEALTH_BAR_BG_COLOR, outline="")
         self.health_bar_fill_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=HEALTH_BAR_FILL_COLOR, outline="")
         self.health_bar_border_id = self.canvas.create_rectangle(0, 0, 0, 0, outline=HUD_TEXT_COLOR, width=1)
@@ -438,6 +522,8 @@ class SurvivorGame:
         if direction.length() > 0.0:
             self.camera_manual_override = False
             normalized = direction.normalize()
+            if normalized.length() > 0.0:
+                self.facing_direction = normalized
             self.velocity = (self.velocity + normalized * ACCELERATION).clamp_magnitude(MAX_SPEED)
         else:
             self.velocity = Vector2(self.velocity.x * FRICTION, self.velocity.y * FRICTION)
@@ -472,6 +558,73 @@ class SurvivorGame:
     def _wrapped_delta(self, current: float, target: float) -> float:
         diff = (target - current + self.tile_count / 2) % self.tile_count - self.tile_count / 2
         return diff
+
+    def _transform_points(
+        self,
+        base_points: Iterable[Tuple[float, float]],
+        angle: float,
+        scale: float,
+        center_x: float,
+        center_y: float,
+    ) -> List[float]:
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        transformed: List[float] = []
+        for point_x, point_y in base_points:
+            rotated_x = point_x * cos_angle - point_y * sin_angle
+            rotated_y = point_x * sin_angle + point_y * cos_angle
+            transformed.append(center_x + rotated_x * scale)
+            transformed.append(center_y + rotated_y * scale)
+        return transformed
+
+    def _transform_point(
+        self,
+        point: Tuple[float, float],
+        angle: float,
+        scale: float,
+        center_x: float,
+        center_y: float,
+    ) -> Tuple[float, float]:
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        base_x, base_y = point
+        rotated_x = base_x * cos_angle - base_y * sin_angle
+        rotated_y = base_x * sin_angle + base_y * cos_angle
+        return center_x + rotated_x * scale, center_y + rotated_y * scale
+
+    def _update_player_sprite(self, center_x: float, center_y: float, tile_size: float) -> None:
+        if self.facing_direction.length() == 0.0:
+            angle = -math.pi / 2
+        else:
+            angle = math.atan2(self.facing_direction.y, self.facing_direction.x)
+        scale = tile_size * PLAYER_SCALE
+        body_coords = self._transform_points(PLAYER_BODY_POINTS, angle, scale, center_x, center_y)
+        self.canvas.coords(self.player_body_id, *body_coords)
+        belly_coords = self._transform_points(PLAYER_BELLY_POINTS, angle, scale, center_x, center_y)
+        self.canvas.coords(self.player_belly_id, *belly_coords)
+        crest_coords = self._transform_points(PLAYER_CREST_POINTS, angle, scale, center_x, center_y)
+        self.canvas.coords(self.player_crest_id, *crest_coords)
+
+        eye_center_x, eye_center_y = self._transform_point(
+            PLAYER_EYE_OFFSET, angle, scale, center_x, center_y
+        )
+        eye_radius = tile_size * PLAYER_EYE_RADIUS
+        self.canvas.coords(
+            self.player_eye_id,
+            eye_center_x - eye_radius,
+            eye_center_y - eye_radius,
+            eye_center_x + eye_radius,
+            eye_center_y + eye_radius,
+        )
+
+        pupil_radius = tile_size * PLAYER_PUPIL_RADIUS
+        self.canvas.coords(
+            self.player_pupil_id,
+            eye_center_x - pupil_radius,
+            eye_center_y - pupil_radius,
+            eye_center_x + pupil_radius,
+            eye_center_y + pupil_radius,
+        )
 
     def _render_scene(self) -> None:
         viewport_width = max(1, self.canvas.winfo_width())
@@ -513,20 +666,13 @@ class SurvivorGame:
 
         player_pixel_x = self.position.x * tile_size - top_left_pixel_x
         player_pixel_y = self.position.y * tile_size - top_left_pixel_y
-        radius = tile_size * 0.3
-        self.canvas.coords(
-            self.player_id,
-            player_pixel_x - radius,
-            player_pixel_y - radius,
-            player_pixel_x + radius,
-            player_pixel_y + radius,
-        )
+        self._update_player_sprite(player_pixel_x, player_pixel_y, tile_size)
 
         bar_width = tile_size * 0.8
         bar_height = 10
         bar_left = player_pixel_x - bar_width / 2
         bar_right = player_pixel_x + bar_width / 2
-        bar_top = player_pixel_y - radius - 20
+        bar_top = player_pixel_y - tile_size * PLAYER_HEALTHBAR_OFFSET - 20
         bar_bottom = bar_top + bar_height
 
         health_ratio = max(0.0, min(1.0, self.health / self.max_health))
