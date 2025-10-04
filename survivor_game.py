@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass, field
@@ -457,6 +458,10 @@ class SurvivorGame:
         self._update_xp_bar()
         self.tile_surface_cache: dict[tuple[int, int], tuple[str, str]] = {}
         self.tile_rectangles: List[int] = []
+        self.start_time: Optional[float] = None
+        self.total_distance_travelled = 0.0
+        self.fastest_speed = 0.0
+        self.game_over_overlay: Optional[tk.Frame] = None
 
         self.keys_pressed: set[str] = set()
         self.game_running = False
@@ -873,6 +878,9 @@ class SurvivorGame:
         self.intro_overlay.destroy()
         self._setup_bindings()
         self.game_running = True
+        self.start_time = time.monotonic()
+        self.total_distance_travelled = 0.0
+        self.fastest_speed = 0.0
         self._update_spawn_schedules(force=True)
         self._schedule_coin_reward()
         self._schedule_next_frame()
@@ -980,9 +988,14 @@ class SurvivorGame:
                 self.velocity = Vector2(self.velocity.x, 0.0)
 
     def _update_position(self) -> None:
+        previous_position = Vector2(self.position.x, self.position.y)
         new_x = (self.position.x + self.velocity.x) % self.tile_count
         new_y = (self.position.y + self.velocity.y) % self.tile_count
         self.position = Vector2(new_x, new_y)
+        if self.game_running and self.start_time is not None:
+            delta_x = self._wrapped_delta(previous_position.x, new_x)
+            delta_y = self._wrapped_delta(previous_position.y, new_y)
+            self.total_distance_travelled += math.hypot(delta_x, delta_y)
 
     def _update_camera(self) -> None:
         if self.camera_manual_override and not self.keys_pressed and self.velocity.length() <= SPEED_EPSILON:
@@ -1144,6 +1157,8 @@ class SurvivorGame:
         speed_tiles_per_second = self.velocity.length() * (1000.0 / UPDATE_DELAY_MS)
         if speed_tiles_per_second < 0.005:
             speed_tiles_per_second = 0.0
+        if self.game_running:
+            self.fastest_speed = max(self.fastest_speed, speed_tiles_per_second)
         self.speed_label.config(text=f"Laufgeschwindigkeit: {speed_tiles_per_second:.2f} Felder/s")
 
     def _update_xp_bar(self) -> None:
@@ -1509,6 +1524,8 @@ class SurvivorGame:
                     enemy.last_attack_time = now
             if enemy.health <= 0:
                 self._remove_enemy(enemy)
+        if self.health <= 0:
+            self._handle_player_death()
 
     def _schedule_next_frame(self) -> None:
         self.root.after(UPDATE_DELAY_MS, self._game_loop)
@@ -1520,9 +1537,136 @@ class SurvivorGame:
         self._update_position()
         self._update_camera()
         self._update_enemies()
+        if not self.game_running:
+            return
         self._render_scene()
         self._update_status_ui()
         self._schedule_next_frame()
+
+    def _handle_player_death(self) -> None:
+        if not self.game_running:
+            return
+        self.game_running = False
+        self.keys_pressed.clear()
+        self.velocity = Vector2(0.0, 0.0)
+        self._cancel_spawn_handles()
+        survival_time = 0.0
+        if self.start_time is not None:
+            survival_time = max(0.0, time.monotonic() - self.start_time)
+        summary_text = self._generate_obituary_text(survival_time)
+        self._play_funeral_tone()
+        self._show_game_over_overlay(summary_text)
+
+    def _play_funeral_tone(self) -> None:
+        def play_sequence() -> None:
+            try:
+                import winsound
+            except ModuleNotFoundError:
+                for delay in (0.0, 0.6, 1.2, 1.8):
+                    time.sleep(delay)
+                    try:
+                        self.root.bell()
+                    except tk.TclError:
+                        break
+                return
+            pattern = [
+                (392, 500),
+                (349, 450),
+                (330, 450),
+                (294, 700),
+            ]
+            for frequency, duration in pattern:
+                try:
+                    winsound.Beep(frequency, duration)
+                except RuntimeError:
+                    break
+                time.sleep(0.05)
+
+        threading.Thread(target=play_sequence, daemon=True).start()
+
+    def _generate_obituary_text(self, survival_time: float) -> str:
+        minutes = int(survival_time // 60)
+        seconds = int(survival_time % 60)
+        time_parts: List[str] = []
+        if minutes > 0:
+            minute_text = "Minute" if minutes == 1 else "Minuten"
+            time_parts.append(f"{minutes} {minute_text}")
+        time_parts.append(f"{seconds} Sekunden")
+        time_text = " und ".join(time_parts)
+
+        highlights = [
+            f"Überlebte tapfer {time_text} – laut Trauerredner ein persönlicher Bestwert.",
+            f"Sammelte {self.coins} glänzende Münzen – der Erbnachlass glänzt heller als der Sarg.",
+            f"Legte {self.total_distance_travelled:.1f} Felder zurück – ein Marathon auf der Suche nach Snacks.",
+            f"Spitzen-Geschwindigkeit: {self.fastest_speed:.2f} Felder/s – ohne Tempolimit, ohne Gnade.",
+        ]
+
+        if self.xp > 0:
+            highlights.append(
+                f"Erkämpfte sich {self.xp} XP – Erfahrung, die leider nicht vererbbar ist."
+            )
+        else:
+            highlights.append(
+                "Sammelte 0 XP – eine Naturbegabung braucht keine Weiterbildung."
+            )
+
+        closing_lines = [
+            "Die Zombies applaudieren leise, die Münzen klimpern nach. Ruhe in Pixeln!",
+            "Möge der Respawn schnell kommen und der Loot noch schneller.",
+            "Grabinschrift: 'Kam. Sah. Stolperte. Aber sah dabei fantastisch aus.'",
+        ]
+
+        summary = "Hier ruht eine Legende der Survivor-Inseln.\n\n"
+        summary += "\n".join(f"• {entry}" for entry in highlights)
+        summary += "\n\n" + random.choice(closing_lines)
+        return summary
+
+    def _show_game_over_overlay(self, summary_text: str) -> None:
+        if self.game_over_overlay is not None:
+            try:
+                self.game_over_overlay.destroy()
+            except tk.TclError:
+                pass
+        overlay = tk.Frame(self.root, bg="#120c1a")
+        overlay.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
+
+        headline = tk.Label(
+            overlay,
+            text="Spiel vorbei",
+            font=("Helvetica", 28, "bold"),
+            fg="#f5e6ff",
+            bg="#120c1a",
+        )
+        headline.pack(pady=(80, 20))
+
+        summary_label = tk.Label(
+            overlay,
+            text=summary_text,
+            font=("Helvetica", 14),
+            fg="#f5e6ff",
+            bg="#120c1a",
+            justify="left",
+            wraplength=720,
+        )
+        summary_label.pack(padx=60)
+
+        close_button = tk.Button(
+            overlay,
+            text="Fenster schließen",
+            font=("Helvetica", 14, "bold"),
+            command=self.root.destroy,
+            bg="#eb5e55",
+            fg="#120c1a",
+            activebackground="#d94f46",
+            activeforeground="#120c1a",
+            relief=tk.FLAT,
+            padx=20,
+            pady=8,
+        )
+        close_button.pack(pady=50)
+        close_button.focus_set()
+
+        self.game_over_overlay = overlay
 
     def run(self) -> None:
         self.root.mainloop()
