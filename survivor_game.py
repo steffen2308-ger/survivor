@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 import math
+import random
+import time
 import tkinter as tk
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 BASE_TILE_SIZE = 64  # pixels per tile at zoom level 1.0
 DEFAULT_VIEWPORT_WIDTH = 800
@@ -39,6 +41,8 @@ DEFAULT_CONFIG = {
 }
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
+ENEMY_CONFIG_PATH = Path(__file__).with_name("Gegner.json")
+LEVEL_CONFIG_PATH = Path(__file__).with_name("Level.json")
 MIN_ZOOM = 0.5
 
 ACCELERATION = 0.12
@@ -136,6 +140,53 @@ class GameConfig:
     tile_count: int
     max_zoom: float
     player: PlayerConfig
+
+
+@dataclass
+class EnemyType:
+    name: str
+    strength: int
+    speed: float
+    initial_health: int
+    attack_speed: float
+    appearance: str | None = None
+
+    @property
+    def attack_cooldown(self) -> float:
+        if self.attack_speed <= 0:
+            return float("inf")
+        return 1.0 / self.attack_speed
+
+
+@dataclass
+class SpawnEntry:
+    enemy: str
+    interval_seconds: float
+
+
+@dataclass
+class SpawnRule:
+    min_xp: int
+    max_xp: Optional[int]
+    spawns: List[SpawnEntry] = field(default_factory=list)
+
+    def matches(self, xp: int) -> bool:
+        if xp < self.min_xp:
+            return False
+        if self.max_xp is None:
+            return True
+        return xp <= self.max_xp
+
+
+@dataclass
+class Enemy:
+    enemy_type: EnemyType
+    position: Vector2
+    health: float
+    last_attack_time: float = field(default_factory=lambda: 0.0)
+    canvas_id: Optional[int] = None
+    health_bar_id: Optional[int] = None
+    health_bar_border_id: Optional[int] = None
 
 
 def load_game_config() -> GameConfig:
@@ -404,6 +455,7 @@ class SurvivorGame:
         self._update_coin_label()
         self._update_xp_bar()
         self.tile_surface_cache: dict[tuple[int, int], tuple[str, str]] = {}
+        self.tile_rectangles: List[int] = []
 
         self.keys_pressed: set[str] = set()
         self.game_running = False
@@ -453,6 +505,17 @@ class SurvivorGame:
         self.health_bar_bg_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=HEALTH_BAR_BG_COLOR, outline="")
         self.health_bar_fill_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=HEALTH_BAR_FILL_COLOR, outline="")
         self.health_bar_border_id = self.canvas.create_rectangle(0, 0, 0, 0, outline=HUD_TEXT_COLOR, width=1)
+
+        self.enemy_types = self._load_enemy_types()
+        self.spawn_rules = self._load_level_rules()
+        self.current_spawn_rule: Optional[SpawnRule] = None
+        self.enemy_spawn_handles: Dict[int, str] = {}
+        self.enemies: List[Enemy] = []
+        self.enemy_colors: Dict[str, str] = {
+            "zombie": "#4caf50",
+            "skeleton": "#d7d7d7",
+            "ogre": "#8d6e63",
+        }
 
         self.intro_overlay = self._create_intro_overlay()
 
@@ -677,12 +740,142 @@ class SurvivorGame:
 
         return overlay
 
+    def _load_enemy_types(self) -> Dict[str, EnemyType]:
+        try:
+            with ENEMY_CONFIG_PATH.open("r", encoding="utf-8") as enemy_file:
+                raw_data = json.load(enemy_file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raw_data = {}
+
+        enemy_types: Dict[str, EnemyType] = {}
+        if isinstance(raw_data, dict):
+            for name, data in raw_data.items():
+                if not isinstance(data, dict):
+                    continue
+                try:
+                    strength = int(data.get("strength", 5))
+                    speed = float(data.get("speed", 0.5))
+                    initial_health = int(data.get("initial_health", 20))
+                    attack_speed = float(data.get("attack_speed", 0.2))
+                    appearance = data.get("appearance")
+                except (TypeError, ValueError):
+                    continue
+                enemy_types[name] = EnemyType(
+                    name=name,
+                    strength=max(1, strength),
+                    speed=max(0.0, speed),
+                    initial_health=max(1, initial_health),
+                    attack_speed=max(0.0, attack_speed),
+                    appearance=appearance if isinstance(appearance, str) else None,
+                )
+
+        if not enemy_types:
+            enemy_types = {
+                "zombie": EnemyType(
+                    name="zombie",
+                    strength=8,
+                    speed=0.6,
+                    initial_health=50,
+                    attack_speed=0.1,
+                    appearance=None,
+                )
+            }
+        return enemy_types
+
+    def _load_level_rules(self) -> List[SpawnRule]:
+        default_rules = [
+            SpawnRule(
+                min_xp=0,
+                max_xp=99,
+                spawns=[SpawnEntry(enemy="zombie", interval_seconds=30.0)],
+            ),
+            SpawnRule(
+                min_xp=100,
+                max_xp=200,
+                spawns=[
+                    SpawnEntry(enemy="zombie", interval_seconds=30.0),
+                    SpawnEntry(enemy="skeleton", interval_seconds=30.0),
+                ],
+            ),
+            SpawnRule(
+                min_xp=201,
+                max_xp=None,
+                spawns=[
+                    SpawnEntry(enemy="zombie", interval_seconds=25.0),
+                    SpawnEntry(enemy="skeleton", interval_seconds=20.0),
+                    SpawnEntry(enemy="ogre", interval_seconds=45.0),
+                ],
+            ),
+        ]
+
+        try:
+            with LEVEL_CONFIG_PATH.open("r", encoding="utf-8") as level_file:
+                raw_data = json.load(level_file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raw_data = None
+
+        rules: List[SpawnRule] = []
+        if isinstance(raw_data, dict):
+            entries = raw_data.get("levels")
+        else:
+            entries = raw_data
+
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    min_xp = int(entry.get("min_xp", 0))
+                except (TypeError, ValueError):
+                    continue
+                max_xp_raw = entry.get("max_xp")
+                max_xp: Optional[int]
+                if max_xp_raw is None:
+                    max_xp = None
+                else:
+                    try:
+                        max_xp = int(max_xp_raw)
+                    except (TypeError, ValueError):
+                        max_xp = None
+                spawn_list = entry.get("spawns")
+                spawn_entries: List[SpawnEntry] = []
+                if isinstance(spawn_list, list):
+                    for spawn_entry in spawn_list:
+                        if not isinstance(spawn_entry, dict):
+                            continue
+                        enemy_name = spawn_entry.get("enemy")
+                        interval_value = spawn_entry.get("interval_seconds")
+                        if not isinstance(enemy_name, str):
+                            continue
+                        try:
+                            interval_seconds = float(interval_value)
+                        except (TypeError, ValueError):
+                            continue
+                        if interval_seconds <= 0:
+                            continue
+                        if enemy_name not in self.enemy_types:
+                            continue
+                        spawn_entries.append(
+                            SpawnEntry(enemy=enemy_name, interval_seconds=interval_seconds)
+                        )
+                if spawn_entries:
+                    rules.append(SpawnRule(min_xp=min_xp, max_xp=max_xp, spawns=spawn_entries))
+
+        if not rules:
+            rules = [rule for rule in default_rules if any(
+                spawn.enemy in self.enemy_types for spawn in rule.spawns
+            )]
+
+        rules.sort(key=lambda rule: rule.min_xp)
+        return rules
+
     def start_game(self) -> None:
         if self.game_running:
             return
         self.intro_overlay.destroy()
         self._setup_bindings()
         self.game_running = True
+        self._update_spawn_schedules(force=True)
         self._schedule_coin_reward()
         self._schedule_next_frame()
 
@@ -896,31 +1089,40 @@ class SurvivorGame:
         visible_columns = int(viewport_width / tile_size) + 3
         visible_rows = int(viewport_height / tile_size) + 3
 
-        self.canvas.delete("tile")
-        self.canvas.delete("detail")
-        self.canvas.delete("grid")
+        required_tiles = visible_rows * visible_columns
+        while len(self.tile_rectangles) < required_tiles:
+            rect_id = self.canvas.create_rectangle(0, 0, 0, 0, fill=BACKGROUND_COLOR, outline="")
+            self.tile_rectangles.append(rect_id)
+            self.canvas.tag_lower(rect_id)
+        while len(self.tile_rectangles) > required_tiles:
+            rect_id = self.tile_rectangles.pop()
+            self.canvas.delete(rect_id)
 
+        tile_index = 0
         for row in range(visible_rows):
             tile_y = start_tile_y + row
             pixel_y = tile_y * tile_size - top_left_pixel_y
             for column in range(visible_columns):
                 tile_x = start_tile_x + column
                 pixel_x = tile_x * tile_size - top_left_pixel_x
-                color, biome = self._get_tile_surface(tile_x, tile_y)
-                self.canvas.create_rectangle(
+                color, _biome = self._get_tile_surface(tile_x, tile_y)
+                rect_id = self.tile_rectangles[tile_index]
+                tile_index += 1
+                self.canvas.coords(
+                    rect_id,
                     pixel_x,
                     pixel_y,
                     pixel_x + tile_size,
                     pixel_y + tile_size,
-                    fill=color,
-                    outline="",
-                    tags=("tile",),
                 )
-                self._draw_tile_details(tile_x, tile_y, pixel_x, pixel_y, tile_size, biome)
+                self.canvas.itemconfigure(rect_id, fill=color)
 
         player_pixel_x = self.position.x * tile_size - top_left_pixel_x
         player_pixel_y = self.position.y * tile_size - top_left_pixel_y
         self._update_player_sprite(player_pixel_x, player_pixel_y, tile_size)
+
+        for enemy in self.enemies:
+            self._update_enemy_canvas(enemy, top_left_pixel_x, top_left_pixel_y, tile_size)
 
         bar_width = tile_size * 0.8
         bar_height = 10
@@ -972,6 +1174,167 @@ class SurvivorGame:
             self._update_coin_label()
         self._schedule_coin_reward()
 
+    def _update_spawn_schedules(self, force: bool = False) -> None:
+        active_rule = None
+        for rule in self.spawn_rules:
+            if rule.matches(self.xp):
+                active_rule = rule
+                break
+        if not force and active_rule is self.current_spawn_rule:
+            return
+        self._cancel_spawn_handles()
+        self.current_spawn_rule = active_rule
+        if active_rule is None:
+            return
+        for entry in active_rule.spawns:
+            self._schedule_spawn_entry(entry)
+
+    def _cancel_spawn_handles(self) -> None:
+        for handle in list(self.enemy_spawn_handles.values()):
+            try:
+                self.root.after_cancel(handle)
+            except ValueError:
+                pass
+        self.enemy_spawn_handles.clear()
+
+    def _schedule_spawn_entry(self, entry: SpawnEntry) -> None:
+        delay = max(1, int(entry.interval_seconds * 1000))
+        handle = self.root.after(delay, lambda e=entry: self._spawn_enemy_from_entry(e))
+        self.enemy_spawn_handles[id(entry)] = handle
+
+    def _spawn_enemy_from_entry(self, entry: SpawnEntry) -> None:
+        if not self.game_running:
+            return
+        enemy_type = self.enemy_types.get(entry.enemy)
+        if enemy_type is None:
+            return
+        spawn_position = self._random_spawn_position()
+        enemy = Enemy(
+            enemy_type=enemy_type,
+            position=spawn_position,
+            health=enemy_type.initial_health,
+        )
+        self.enemies.append(enemy)
+        self._schedule_spawn_entry(entry)
+
+    def _random_spawn_position(self) -> Vector2:
+        attempts = 5
+        for _ in range(attempts):
+            x = random.uniform(0, self.tile_count)
+            y = random.uniform(0, self.tile_count)
+            if self._distance_in_tiles(Vector2(x, y), self.position) > 8.0:
+                return Vector2(x, y)
+        return Vector2(random.uniform(0, self.tile_count), random.uniform(0, self.tile_count))
+
+    def _distance_in_tiles(self, a: Vector2, b: Vector2) -> float:
+        delta_x = self._wrapped_delta(a.x, b.x)
+        delta_y = self._wrapped_delta(a.y, b.y)
+        return math.hypot(delta_x, delta_y)
+
+    def _update_enemy_canvas(
+        self,
+        enemy: Enemy,
+        top_left_pixel_x: float,
+        top_left_pixel_y: float,
+        tile_size: float,
+    ) -> None:
+        pixel_x = enemy.position.x * tile_size - top_left_pixel_x
+        pixel_y = enemy.position.y * tile_size - top_left_pixel_y
+        radius = tile_size * 0.35
+        left = pixel_x - radius
+        top = pixel_y - radius
+        right = pixel_x + radius
+        bottom = pixel_y + radius
+        color = self.enemy_colors.get(enemy.enemy_type.name, "#ff7043")
+        if enemy.canvas_id is None:
+            enemy.canvas_id = self.canvas.create_oval(left, top, right, bottom, fill=color, outline="#1b1b1b", width=2)
+        else:
+            self.canvas.coords(enemy.canvas_id, left, top, right, bottom)
+            self.canvas.itemconfigure(enemy.canvas_id, fill=color)
+
+        bar_width = tile_size * 0.6
+        bar_height = 6
+        bar_left = pixel_x - bar_width / 2
+        bar_right = pixel_x + bar_width / 2
+        bar_top = top - 10
+        bar_bottom = bar_top + bar_height
+        health_ratio = 0.0 if enemy.enemy_type.initial_health <= 0 else max(0.0, min(1.0, enemy.health / enemy.enemy_type.initial_health))
+        fill_right = bar_left + bar_width * health_ratio
+        fill_right = max(bar_left, min(bar_right, fill_right))
+        if enemy.health_bar_id is None:
+            enemy.health_bar_id = self.canvas.create_rectangle(
+                bar_left,
+                bar_top,
+                fill_right,
+                bar_bottom,
+                fill="#ff5d62",
+                outline="",
+            )
+        else:
+            self.canvas.coords(enemy.health_bar_id, bar_left, bar_top, fill_right, bar_bottom)
+        if enemy.health_bar_border_id is None:
+            enemy.health_bar_border_id = self.canvas.create_rectangle(
+                bar_left,
+                bar_top,
+                bar_right,
+                bar_bottom,
+                outline="#1b1b1b",
+                width=1,
+            )
+        else:
+            self.canvas.coords(enemy.health_bar_border_id, bar_left, bar_top, bar_right, bar_bottom)
+        if enemy.canvas_id is not None:
+            self.canvas.tag_raise(enemy.canvas_id)
+        if enemy.health_bar_id is not None:
+            self.canvas.tag_raise(enemy.health_bar_id)
+        if enemy.health_bar_border_id is not None:
+            self.canvas.tag_raise(enemy.health_bar_border_id)
+
+    def _remove_enemy(self, enemy: Enemy) -> None:
+        if enemy in self.enemies:
+            self.enemies.remove(enemy)
+        if enemy.canvas_id is not None:
+            self.canvas.delete(enemy.canvas_id)
+            enemy.canvas_id = None
+        if enemy.health_bar_id is not None:
+            self.canvas.delete(enemy.health_bar_id)
+            enemy.health_bar_id = None
+        if enemy.health_bar_border_id is not None:
+            self.canvas.delete(enemy.health_bar_border_id)
+            enemy.health_bar_border_id = None
+
+    def _update_enemies(self) -> None:
+        self._update_spawn_schedules()
+        if not self.enemies:
+            return
+        delta_time = UPDATE_DELAY_MS / 1000.0
+        now = time.monotonic()
+        for enemy in list(self.enemies):
+            direction = Vector2(
+                self._wrapped_delta(enemy.position.x, self.position.x),
+                self._wrapped_delta(enemy.position.y, self.position.y),
+            )
+            distance = direction.length()
+            if distance > 0.0:
+                move_distance = enemy.enemy_type.speed * delta_time
+                if move_distance > 0.0:
+                    if distance <= move_distance:
+                        enemy.position = Vector2(self.position.x, self.position.y)
+                    else:
+                        step = direction.normalize() * move_distance
+                        enemy.position = Vector2(
+                            (enemy.position.x + step.x) % self.tile_count,
+                            (enemy.position.y + step.y) % self.tile_count,
+                        )
+            collision_distance = 0.45
+            if distance <= collision_distance:
+                cooldown = enemy.enemy_type.attack_cooldown
+                if now - enemy.last_attack_time >= cooldown:
+                    self.health = max(0, self.health - enemy.enemy_type.strength)
+                    enemy.last_attack_time = now
+            if enemy.health <= 0:
+                self._remove_enemy(enemy)
+
     def _schedule_next_frame(self) -> None:
         self.root.after(UPDATE_DELAY_MS, self._game_loop)
 
@@ -981,6 +1344,7 @@ class SurvivorGame:
         self._apply_input()
         self._update_position()
         self._update_camera()
+        self._update_enemies()
         self._render_scene()
         self._update_status_ui()
         self._schedule_next_frame()
